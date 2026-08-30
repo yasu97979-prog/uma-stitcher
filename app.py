@@ -119,9 +119,9 @@ st.set_page_config(page_title="ウマ娘 因子スクロール結合", layout="w
 st.title("🐴 ウマ娘 因子スクロール自動結合ツール")
 
 st.markdown("""
-下の「📋 画像を貼り付け」ボタンをクリックすると、クリップボードにコピーされている
-スクリーンショットがそのまま取り込まれます（ファイル選択ダイアログは開きません）。
-1枚コピー→ボタンをクリック、を繰り返して必要な枚数を追加してください。
+PCの方は「📋 画像を貼り付け」ボタンでクリップボードの画像をそのまま追加できます
+（フォルダ選択は開きません）。スマホの方は「📱 スマホの方はこちら」から
+写真フォルダを開いて複数枚まとめて選択してください。
 """)
 
 # --- データの保持 ---
@@ -133,39 +133,74 @@ if 'freed_slots' not in st.session_state:
     # 削除された枠の番号（インデックス）を保持しておき、
     # 次に貼り付けた画像を末尾ではなくこの位置に差し込むために使う
     st.session_state.freed_slots = []
+if 'processed_file_ids' not in st.session_state:
+    st.session_state.processed_file_ids = set()
 
-# --- 貼り付けボタン ---
-# ※ブラウザのClipboard APIを使うため、初回はブラウザ側の許可ダイアログが出ることがあります。
-#   Chrome / Edge / Safari で動作確認済み。Firefoxは非対応です。
-paste_result = pbutton(
-    label="📋 画像を貼り付け",
-    text_color="#ffffff",
-    background_color="#4285f4",
-    hover_background_color="#3367d6",
-    key="paste_button",
-)
 
-if paste_result.image_data is not None:
-    # PIL Image -> OpenCV(BGR) に変換
-    pil_img = paste_result.image_data.convert("RGB")
-    img_array = np.array(pil_img)
-    img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+def add_image(img_bgr):
+    """画像1枚をimage_listに追加する（空き枠があればそこに、無ければ末尾に）"""
+    if st.session_state.freed_slots:
+        st.session_state.freed_slots.sort()
+        slot = st.session_state.freed_slots.pop(0)
+        slot = min(slot, len(st.session_state.image_list))  # 念のため範囲を安全に丸める
+        st.session_state.image_list.insert(slot, img_bgr)
+    else:
+        st.session_state.image_list.append(img_bgr)
 
-    # 同じ貼り付けイベントを再実行（rerun）のたびに重複追加しないよう、
-    # 画像内容のハッシュで直前の貼り付けと同一かどうかを判定する
-    img_hash = hashlib.md5(img_bgr.tobytes()).hexdigest()
-    if img_hash != st.session_state.last_pasted_hash:
-        if st.session_state.freed_slots:
-            # 空いている枠があれば、一番若い番号の枠に差し込む
-            st.session_state.freed_slots.sort()
-            slot = st.session_state.freed_slots.pop(0)
-            slot = min(slot, len(st.session_state.image_list))  # 念のため範囲を安全に丸める
-            st.session_state.image_list.insert(slot, img_bgr)
-        else:
-            # 空き枠が無ければ今まで通り末尾に追加
-            st.session_state.image_list.append(img_bgr)
-        st.session_state.last_pasted_hash = img_hash
-        st.rerun()
+
+# --- 画像の追加方法（PC / スマホで使い分け） ---
+paste_col, upload_col = st.columns(2)
+
+with paste_col:
+    st.caption("🖥️ PCの方はこちら（フォルダは開きません）")
+    # ※ブラウザのClipboard APIを使うため、初回はブラウザ側の許可ダイアログが出ることがあります。
+    #   Chrome / Edge / Safari で動作確認済み。Firefoxは非対応です。
+    paste_result = pbutton(
+        label="📋 画像を貼り付け",
+        text_color="#ffffff",
+        background_color="#4285f4",
+        hover_background_color="#3367d6",
+        key="paste_button",
+    )
+
+    if paste_result.image_data is not None:
+        # PIL Image -> OpenCV(BGR) に変換
+        pil_img = paste_result.image_data.convert("RGB")
+        img_array = np.array(pil_img)
+        img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+
+        # 同じ貼り付けイベントを再実行（rerun）のたびに重複追加しないよう、
+        # 画像内容のハッシュで直前の貼り付けと同一かどうかを判定する
+        img_hash = hashlib.md5(img_bgr.tobytes()).hexdigest()
+        if img_hash != st.session_state.last_pasted_hash:
+            add_image(img_bgr)
+            st.session_state.last_pasted_hash = img_hash
+            st.rerun()
+
+with upload_col:
+    st.caption("📱 スマホの方はこちら（複数選択可）")
+    uploaded_files = st.file_uploader(
+        "画像を選択",
+        type=["png", "jpg", "jpeg"],
+        accept_multiple_files=True,
+        key="mobile_uploader",
+        label_visibility="collapsed",
+    )
+
+    if uploaded_files:
+        new_added = False
+        for f in uploaded_files:
+            # まだ読み込んでいない新しいファイルだけを処理する
+            if f.file_id not in st.session_state.processed_file_ids:
+                st.session_state.processed_file_ids.add(f.file_id)
+                file_bytes = f.read()
+                img_array = np.frombuffer(file_bytes, np.uint8)
+                img_bgr = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                if img_bgr is not None:
+                    add_image(img_bgr)
+                new_added = True
+        if new_added:
+            st.rerun()
 
 # --- プレビュー・結合エリア ---
 if st.session_state.image_list:
@@ -192,6 +227,7 @@ if st.session_state.image_list:
             st.session_state.image_list = []
             st.session_state.last_pasted_hash = None
             st.session_state.freed_slots = []
+            st.session_state.processed_file_ids = set()
             st.rerun()
 
     with col2:
