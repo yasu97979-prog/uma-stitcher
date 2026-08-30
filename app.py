@@ -162,7 +162,15 @@ def stitch_images(images, manual_ratio=None, threshold=0.75, search_ratio=0.85):
 
         # マッチ位置はbase_list末尾からmargin分手前を指しているので、
         # 実際の継ぎ目位置はそこにmarginを足した位置になる
-        new_part = next_list[match_y + template_h + margin:, :]
+        cut_point = match_y + template_h + margin
+
+        # base_listの一番下ぎりぎり（margin分）は、リストの表示が途切れる
+        # ウィンドウ下端にうっすらとした縁・フェードが入っていることがあり、
+        # そのまま使うと継ぎ目に細い線として残ってしまう。次の画像側には
+        # その縁が写っていないため、同じmargin分だけ次の画像側から使うことで
+        # 縁を取り除く。
+        base_list = base_list[:-margin] if margin > 0 else base_list
+        new_part = next_list[max(0, cut_point - margin):, :]
         base_list = np.vstack((base_list, new_part))
 
     return np.vstack((final_header, base_list, final_footer))
