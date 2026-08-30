@@ -3,8 +3,36 @@ import cv2
 import numpy as np
 import hashlib
 import base64
+import glob
 import streamlit.components.v1 as components
+from PIL import Image, ImageDraw, ImageFont
 from streamlit_paste_button import paste_image_button as pbutton
+
+
+def find_japanese_font():
+    """
+    日本語フォントを探す。デプロイ環境によって入っているフォントが異なるため、
+    候補をいくつか順に探し、見つからなければNoneを返す（呼び出し側でフォールバックする）。
+    """
+    candidates = [
+        "/usr/share/fonts/truetype/fonts-japanese-gothic.ttf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJKjp-Regular.otf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKjp-Regular.otf",
+    ]
+    for path in candidates:
+        if glob.glob(path):
+            return glob.glob(path)[0]
+    # 上記で見つからない場合は、システム内を広く検索する
+    for pattern in ["/usr/share/fonts/**/*CJK*.tt*", "/usr/share/fonts/**/*japanese*.tt*",
+                    "/usr/share/fonts/**/*Noto*JP*.tt*"]:
+        found = glob.glob(pattern, recursive=True)
+        if found:
+            return found[0]
+    return None
+
+
+JP_FONT_PATH = find_japanese_font()
 
 
 class StitchError(Exception):
@@ -13,6 +41,167 @@ class StitchError(Exception):
         self.index_a = index_a
         self.index_b = index_b
         super().__init__(f"{index_a}枚目と{index_b}枚目の間で十分な重なりが検出できませんでした")
+
+
+def detect_tab_and_list_start(img, green=(8, 220, 158), tol=40):
+    """
+    画面上部の「スキル／継承／育成情報」タブのうち、緑色でハイライトされている
+    位置からアクティブなタブの種類を判定し、リスト本体が始まるY座標を返す。
+    """
+    H, W = img.shape[:2]
+    target = np.array(green)
+    for y in range(int(H * 0.05), int(H * 0.35)):
+        row = img[y, :int(W * 0.95)].astype(int)
+        dist = np.sqrt(((row - target) ** 2).sum(axis=1))
+        green_mask = dist < tol
+        if green_mask.sum() > W * 0.15:
+            green_xs = np.where(green_mask)[0]
+            center_x = green_xs.mean()
+            if center_x < W * 0.4:
+                tab = "スキル"
+            elif center_x < W * 0.7:
+                tab = "継承"
+            else:
+                tab = "育成情報"
+            yy = y
+            while yy < H and np.sqrt(((img[yy, :int(W * 0.95)].astype(int) - target) ** 2).sum(axis=1)).min() < tol + 20:
+                yy += 1
+            return tab, yy
+    return None, None
+
+
+def find_avatar_section_starts(img, x_range=(40, 85), bg_thresh=225, frac_thresh=0.6, min_run=40, min_gap=200):
+    """
+    継承タブで、親・祖父母のアバターサムネイルが表示されている位置（＝各因子セクションの
+    開始位置）を検出する。画面一番上のアバターは除外し、それ以降に現れるものだけを返す。
+    """
+    H = img.shape[0]
+    band = img[:, x_range[0]:x_range[1]].astype(int)
+    is_bg = (band[:, :, 0] > bg_thresh) & (band[:, :, 1] > bg_thresh) & (band[:, :, 2] > bg_thresh)
+    non_bg_frac = 1 - is_bg.mean(axis=1)
+    is_avatar_row = non_bg_frac > frac_thresh
+    starts = []
+    y = 0
+    while y < H:
+        if is_avatar_row[y]:
+            run_start = y
+            while y < H and is_avatar_row[y]:
+                y += 1
+            if y - run_start >= min_run:
+                if not starts or run_start - starts[-1] >= min_gap:
+                    starts.append(run_start)
+        else:
+            y += 1
+    return starts[1:] if len(starts) > 1 else []
+
+
+def count_boxes_in_range(img, y_start, y_end, row_period, x_pairs=((0.03, 0.48), (0.52, 0.97)),
+                          bg_thresh=240, std_thresh=5):
+    """指定した縦範囲内で、行の周期ごとに左右のセルに「箱（因子/スキル）」があるかを判定して数える"""
+    W = img.shape[1]
+    count = 0
+    n_rows = max(0, int(round((y_end - y_start) / row_period)))
+    for r in range(n_rows):
+        ry0 = y_start + int(r * row_period) + 4
+        ry1 = y_start + int((r + 1) * row_period) - 4
+        if ry1 <= ry0 or ry1 > y_end:
+            continue
+        for xs, xe in x_pairs:
+            x0, x1 = int(W * xs), int(W * xe)
+            cell = img[ry0:ry1, x0:x1]
+            if cell.size == 0:
+                continue
+            mean = cell.reshape(-1, 3).mean(axis=0)
+            std = cell.reshape(-1, 3).std()
+            is_bg = all(c > bg_thresh for c in mean) and std < std_thresh
+            if not is_bg:
+                count += 1
+    return count
+
+
+def count_skill_total(img):
+    """スキルタブ：リスト内の全スキル数を数える"""
+    tab, list_start = detect_tab_and_list_start(img)
+    if list_start is None:
+        return None
+    H, W = img.shape[:2]
+    row_period = estimate_row_period(img[list_start:], int(W * 0.03), int(W * 0.95))
+    if row_period is None:
+        return None
+    total = count_boxes_in_range(img, list_start, H, row_period)
+    return {"スキル合計": total}
+
+
+def count_inheritance_factors(img):
+    """
+    継承タブ：親・祖父母1・祖父母2ごとの因子数と合計を数える。
+    各セクションの先頭3つ（青・ピンク・黄緑のカテゴリタグ）は因子として数えない。
+    """
+    tab, _ = detect_tab_and_list_start(img)
+    section_starts = find_avatar_section_starts(img)
+    if not section_starts:
+        return None
+    H, W = img.shape[:2]
+    section_ends = section_starts[1:] + [H]
+    labels = ["親の因子", "祖父母1の因子", "祖父母2の因子"]
+    x_start, x_end = int(W * 0.25), int(W * 0.85)
+    results = {}
+    total = 0
+    for label, s, e in zip(labels, section_starts, section_ends):
+        row_period = estimate_row_period(img[s:e], x_start, x_end)
+        if row_period is None:
+            continue
+        all_boxes = count_boxes_in_range(img, s, e, row_period)
+        factor_count = max(0, all_boxes - 3)
+        results[label] = factor_count
+        total += factor_count
+    results["合計"] = total
+    return results
+
+
+def render_count_overlay(img, count_dict, position="top"):
+    """カウント結果をテキストとして画像の上部または下部に描画する"""
+    pil_img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+    W = pil_img.width
+    font_size = max(20, W // 22)
+    font = None
+    if JP_FONT_PATH:
+        try:
+            font = ImageFont.truetype(JP_FONT_PATH, font_size)
+        except Exception:
+            font = None
+    if font is None:
+        # 日本語フォントが見つからない場合、文字が表示されない（豆腐化）ので、
+        # ラベルをローマ字に変換してでも読める形にフォールバックする
+        romanize = {
+            "スキル合計": "Skills total", "親の因子": "Parent factors",
+            "祖父母1の因子": "Grandparent1 factors", "祖父母2の因子": "Grandparent2 factors",
+            "合計": "Total",
+        }
+        count_dict = {romanize.get(k, k): v for k, v in count_dict.items()}
+        font = ImageFont.load_default()
+
+    lines = [f"{k}：{v}個" if JP_FONT_PATH else f"{k}: {v}" for k, v in count_dict.items()]
+    line_height = int(font_size * 1.4)
+    pad = int(font_size * 0.6)
+    panel_h = line_height * len(lines) + pad * 2
+
+    panel = Image.new("RGB", (W, panel_h), (255, 250, 230))
+    draw = ImageDraw.Draw(panel)
+    draw.rectangle([0, 0, W - 1, panel_h - 1], outline=(230, 180, 60), width=3)
+    for i, line in enumerate(lines):
+        draw.text((pad, pad + i * line_height), line, fill=(90, 60, 10), font=font)
+
+    if position == "top":
+        combined = Image.new("RGB", (W, pil_img.height + panel_h), (255, 255, 255))
+        combined.paste(panel, (0, 0))
+        combined.paste(pil_img, (0, panel_h))
+    else:
+        combined = Image.new("RGB", (W, pil_img.height + panel_h), (255, 255, 255))
+        combined.paste(pil_img, (0, 0))
+        combined.paste(panel, (0, pil_img.height))
+
+    return cv2.cvtColor(np.array(combined), cv2.COLOR_RGB2BGR)
 
 
 def detect_header_footer_ratio(img_a, img_b, diff_threshold=15, min_run=6, x_frac=(0.25, 0.85)):
@@ -344,6 +533,11 @@ if st.session_state.image_list:
 
     st.write("---")
 
+    count_enabled = st.checkbox(
+        "🔢 結合後にスキル／因子の数を自動で数えて画像に記載する（自動判定・多少の誤差が出る場合があります）",
+        value=False,
+    )
+
     col1, col2 = st.columns([1, 2])
     with col1:
         if st.button("🗑️ すべてリセット", type="secondary"):
@@ -371,6 +565,26 @@ if st.session_state.image_list:
                         )
                     else:
                         st.success("🎉 結合が完了しました！")
+
+                        if count_enabled:
+                            tab, _ = detect_tab_and_list_start(final_img)
+                            counts = None
+                            if tab == "スキル":
+                                counts = count_skill_total(final_img)
+                            elif tab == "継承":
+                                counts = count_inheritance_factors(final_img)
+
+                            if counts:
+                                st.info(
+                                    "📊 " + " ／ ".join(f"{k}：{v}個" for k, v in counts.items())
+                                    + "\n\n（自動判定のため、多少の誤差が出ることがあります）"
+                                )
+                                final_img = render_count_overlay(final_img, counts, position="top")
+                            else:
+                                st.warning(
+                                    "⚠️ タブの種類（スキル／継承）を自動判定できなかったため、"
+                                    "数のカウントはスキップされました。"
+                                )
 
                         is_success, buffer = cv2.imencode(".png", final_img)
                         if is_success:
