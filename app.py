@@ -82,10 +82,13 @@ def estimate_row_period(img_list, x_start, x_end, min_period=15, max_period=150)
     return best_p
 
 
-def stitch_images(images, header_ratio=0.33, footer_ratio=0.13, threshold=0.75, search_ratio=0.85):
+def stitch_images(images, manual_ratio=None, threshold=0.75, search_ratio=0.85):
     """
     画像リストを縦方向に結合する。
     重なりが不十分な箇所があれば StitchError を投げて処理を中断する。
+
+    manual_ratio: (header_ratio, footer_ratio) を指定すると自動判定の代わりに使う。
+                  Noneなら各ペアごとに自動判定する（機種・キャラが混在していても安定するように）。
 
     search_ratio: 次の画像のうち、上から何割の範囲までをマッチング候補として探すか。
     因子リストには似たようなアイコン・行が多く並ぶため、探索範囲を全体にすると
@@ -94,6 +97,12 @@ def stitch_images(images, header_ratio=0.33, footer_ratio=0.13, threshold=0.75, 
     """
     base_img = images[0]
     base_H, base_W = base_img.shape[:2]
+
+    if manual_ratio is not None:
+        header_ratio, footer_ratio = manual_ratio
+    else:
+        detected = detect_header_footer_ratio(images[0], images[1]) if len(images) > 1 else None
+        header_ratio, footer_ratio = detected if detected else (0.33, 0.13)
 
     header_h = int(base_H * header_ratio)
     footer_h = int(base_H * footer_ratio)
@@ -105,15 +114,6 @@ def stitch_images(images, header_ratio=0.33, footer_ratio=0.13, threshold=0.75, 
     x_start = int(base_W * 0.25)
     x_end = int(base_W * 0.85)
 
-    # 行の高さ（周期）を検出し、テンプレートは「1行より少し小さいサイズ」にする。
-    # これにより、重なりが1〜2行しか無いケースでもテンプレートが行の境界を
-    # またいで不安定になることを防ぎ、マッチ精度が大幅に上がる。
-    row_period = estimate_row_period(base_list, x_start, x_end)
-    if row_period is None:
-        row_period = max(20, int(base_H * 0.05))
-    template_h = max(10, int(row_period * 0.7))
-    margin = max(1, int(row_period * 0.1))
-
     for i in range(1, len(images)):
         img_next = images[i]
         next_H, next_W = img_next.shape[:2]
@@ -123,11 +123,29 @@ def stitch_images(images, header_ratio=0.33, footer_ratio=0.13, threshold=0.75, 
             new_H = int(next_H * scale)
             img_next = cv2.resize(img_next, (base_W, new_H))
 
+        # このペア専用のヘッダー・フッター比率を判定する（機種・キャラが途中で変わっても
+        # 前後のペアの影響を受けないように、毎回そのペアの生画像同士で判定し直す）。
+        if manual_ratio is not None:
+            pair_header_ratio, pair_footer_ratio = header_ratio, footer_ratio
+        else:
+            detected_pair = detect_header_footer_ratio(images[i - 1], images[i])
+            pair_header_ratio, pair_footer_ratio = detected_pair if detected_pair else (header_ratio, footer_ratio)
+
         curr_H = img_next.shape[0]
-        curr_header_h = int(curr_H * header_ratio)
-        curr_footer_h = int(curr_H * footer_ratio)
+        curr_header_h = int(curr_H * pair_header_ratio)
+        curr_footer_h = int(curr_H * pair_footer_ratio)
 
         next_list = img_next[curr_header_h: curr_H - curr_footer_h, :]
+
+        # 行の高さ（周期）を検出し、テンプレートは「1行より少し小さいサイズ」にする。
+        # これにより、重なりが1〜2行しか無いケースでもテンプレートが行の境界を
+        # またいで不安定になることを防ぎ、マッチ精度が大幅に上がる。
+        row_period = estimate_row_period(base_list, x_start, x_end)
+        if row_period is None:
+            row_period = max(20, int(base_H * 0.05))
+        template_h = max(10, int(row_period * 0.7))
+        margin = max(1, int(row_period * 0.1))
+
         template = base_list[-(template_h + margin):-margin, x_start:x_end]
 
         # 探索範囲を上側寄りに限定し、離れた場所での誤マッチを防ぐ
@@ -146,9 +164,6 @@ def stitch_images(images, header_ratio=0.33, footer_ratio=0.13, threshold=0.75, 
         # 実際の継ぎ目位置はそこにmarginを足した位置になる
         new_part = next_list[match_y + template_h + margin:, :]
         base_list = np.vstack((base_list, new_part))
-
-        # 次のループのテンプレートサイズ計算のため、周期は毎回使い回してよい
-        # （同じ画面のスクロールなので行の高さは変わらない）
 
     return np.vstack((final_header, base_list, final_footer))
 
@@ -332,26 +347,12 @@ if st.session_state.image_list:
         if len(st.session_state.image_list) >= 2:
             if st.button("✨ 結合スタート！", type="primary"):
                 with st.spinner("画像を結合しています... 少々お待ちください。"):
-                    if manual_override:
-                        header_ratio, footer_ratio = manual_header_ratio, manual_footer_ratio
-                    else:
-                        detected = detect_header_footer_ratio(
-                            st.session_state.image_list[0], st.session_state.image_list[1]
-                        )
-                        if detected is None:
-                            st.warning(
-                                "⚠️ ヘッダー・フッターの自動判定に失敗したため、デフォルト値（33% / 13%）を使用します。"
-                                "うまく結合できない場合は「詳細設定」から手動で指定してください。"
-                            )
-                            header_ratio, footer_ratio = 0.33, 0.13
-                        else:
-                            header_ratio, footer_ratio = detected
+                    manual_ratio = (manual_header_ratio, manual_footer_ratio) if manual_override else None
 
                     try:
                         final_img = stitch_images(
                             st.session_state.image_list,
-                            header_ratio=header_ratio,
-                            footer_ratio=footer_ratio,
+                            manual_ratio=manual_ratio,
                         )
                     except StitchError as e:
                         st.error(
