@@ -15,15 +15,15 @@ class StitchError(Exception):
         super().__init__(f"{index_a}枚目と{index_b}枚目の間で十分な重なりが検出できませんでした")
 
 
-def stitch_images(images, header_ratio=0.33, footer_ratio=0.13, threshold=0.75, search_ratio=0.5):
+def stitch_images(images, header_ratio=0.33, footer_ratio=0.13, threshold=0.75, search_ratio=0.85):
     """
     画像リストを縦方向に結合する。
     重なりが不十分な箇所があれば StitchError を投げて処理を中断する。
 
-    search_ratio: 次の画像のうち、上から何割の範囲だけをマッチング候補として探すか。
+    search_ratio: 次の画像のうち、上から何割の範囲までをマッチング候補として探すか。
     因子リストには似たようなアイコン・行が多く並ぶため、探索範囲を全体にすると
     離れた場所にある別の行を誤って「重なり」として検出してしまうことがある。
-    範囲を上側に制限することで、そうした誤検出を防ぐ。
+    ある程度上側に制限しつつ、正しい重なり位置を取りこぼさない範囲に留める。
     """
     base_img = images[0]
     base_H, base_W = base_img.shape[:2]
@@ -36,6 +36,9 @@ def stitch_images(images, header_ratio=0.33, footer_ratio=0.13, threshold=0.75, 
     base_list = base_img[header_h: base_H - footer_h, :]
 
     template_h = int(base_H * 0.05)
+    # base_listの一番下ぎりぎりは、ウィンドウ下端で行が途中で切れている場合があり
+    # テンプレートとして不安定になりやすいため、少し上（margin分）にずらして採る
+    margin = max(1, int(base_H * 0.015))
     x_start = int(base_W * 0.25)
     x_end = int(base_W * 0.85)
 
@@ -53,10 +56,10 @@ def stitch_images(images, header_ratio=0.33, footer_ratio=0.13, threshold=0.75, 
         curr_footer_h = int(curr_H * footer_ratio)
 
         next_list = img_next[curr_header_h: curr_H - curr_footer_h, :]
-        template = base_list[-template_h:, x_start:x_end]
+        template = base_list[-(template_h + margin):-margin, x_start:x_end]
 
-        # 探索範囲を上側に限定し、離れた場所での誤マッチを防ぐ
-        max_search_h = max(template_h * 2, int(next_list.shape[0] * search_ratio))
+        # 探索範囲を上側寄りに限定し、離れた場所での誤マッチを防ぐ
+        max_search_h = max(template_h * 4, int(next_list.shape[0] * search_ratio))
         search_area = next_list[:max_search_h, x_start:x_end]
 
         res = cv2.matchTemplate(search_area, template, cv2.TM_CCOEFF_NORMED)
@@ -67,7 +70,9 @@ def stitch_images(images, header_ratio=0.33, footer_ratio=0.13, threshold=0.75, 
             # i番目（0-indexed）は表示上「i+1枚目」なので、直前の画像は「i枚目」
             raise StitchError(index_a=i, index_b=i + 1)
 
-        new_part = next_list[match_y + template_h:, :]
+        # マッチ位置はbase_list末尾からmargin分手前を指しているので、
+        # 実際の継ぎ目位置はそこにmarginを足した位置になる
+        new_part = next_list[match_y + template_h + margin:, :]
         base_list = np.vstack((base_list, new_part))
 
     return np.vstack((final_header, base_list, final_footer))
