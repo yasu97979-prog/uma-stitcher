@@ -107,31 +107,38 @@ def find_avatar_section_starts(img, x_range=(40, 85), bg_thresh=225, frac_thresh
     return starts[1:] if len(starts) > 1 else []
 
 
-def find_list_true_end(img, list_start, row_period, x_frac=(0.03, 0.94), bg_thresh=240, density_thresh=0.05):
+def find_list_true_end(img, list_start, row_period, upper_bound=None, x_frac=(0.03, 0.94),
+                        bg_thresh=240, density_thresh=0.05):
     """
-    リスト本体が実際に終わる位置（「閉じる」ボタン手前など）を探す。
+    リスト本体が実際に終わる位置（「閉じる」ボタン手前や、次のセクションの見出しテキスト手前）を探す。
     行と行の間の小さな隙間は行の高さ（row_period）よりずっと短いのに対し、
     リストが終わった後は「内容の無い行」がまとまって続くことを利用して区別する。
     単純な均一性（分散）だけで判定すると、通常の行間ギャップの長さが画像ごとにばらつき
     誤判定しやすいため、行の高さに対する相対的な長さ（row_period基準）で判定する。
+
+    upper_bound：これ以上は絶対に探索しない上限（次のセクションの開始位置など）。
+    セクションの間に十分な空白が無い場合、探索がその先の別セクションの内容まで
+    入り込んでしまうことがあるため、安全のため上限を設けられるようにしている。
+    見つからなければupper_bound（無ければ画像の高さ）を返す。
     """
     H, W = img.shape[:2]
+    limit = min(H, upper_bound) if upper_bound is not None else H
     x0, x1 = int(W * x_frac[0]), int(W * x_frac[1])
     band = img[:, x0:x1].astype(int)
     is_bg = (band[:, :, 0] > bg_thresh) & (band[:, :, 1] > bg_thresh) & (band[:, :, 2] > bg_thresh)
     non_bg_density = 1 - is_bg.mean(axis=1)
     min_blank_run = max(6, int(row_period * 0.35))
     y = list_start + int(row_period * 0.5)  # 最低半行分は必ず内容があるはずなので、そこから探索開始
-    while y < H:
+    while y < limit:
         if non_bg_density[y] < density_thresh:
             run_start = y
-            while y < H and non_bg_density[y] < density_thresh:
+            while y < limit and non_bg_density[y] < density_thresh:
                 y += 1
             if y - run_start >= min_blank_run:
                 return run_start
         else:
             y += 1
-    return H
+    return limit
 
 
 def count_boxes_in_range(img, y_start, y_end, row_period, x_pairs=((0.03, 0.48), (0.52, 0.94)),
@@ -206,11 +213,13 @@ def count_inheritance_factors(img):
     x_start, x_end = int(W * 0.25), int(W * 0.85)
     results = {}
     total = 0
-    for label, s in zip(labels, section_starts):
+    for i, (label, s) in enumerate(zip(labels, section_starts)):
         row_period = estimate_row_period(img[s:min(s + 800, H)], x_start, x_end)
         if row_period is None:
             continue
-        e = find_list_true_end(img, s, row_period)
+        # 次のセクションが存在する場合は、そこを超えて探索しないよう上限として渡す
+        upper_bound = section_starts[i + 1] if i < len(section_starts) - 1 else None
+        e = find_list_true_end(img, s, row_period, upper_bound=upper_bound)
         all_boxes = count_boxes_in_range(img, s, e, row_period)
         factor_count = max(0, all_boxes - 3)
         results[label] = factor_count
