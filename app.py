@@ -164,13 +164,22 @@ def stitch_images(images, manual_ratio=None, threshold=0.75, search_ratio=0.85):
         # 実際の継ぎ目位置はそこにmarginを足した位置になる
         cut_point = match_y + template_h + margin
 
-        # base_listの一番下ぎりぎり（margin分）は、リストの表示が途切れる
-        # ウィンドウ下端にうっすらとした縁・フェードが入っていることがあり、
-        # そのまま使うと継ぎ目に細い線として残ってしまう。次の画像側には
-        # その縁が写っていないため、同じmargin分だけ次の画像側から使うことで
-        # 縁を取り除く。
-        base_list = base_list[:-margin] if margin > 0 else base_list
-        new_part = next_list[max(0, cut_point - margin):, :]
+        # base_listの一番下ぎりぎりには、リストの表示が途切れるウィンドウ下端の
+        # うっすらとした縁・フェードが入っていることがあり、そのまま使うと継ぎ目に
+        # 細い線として残ってしまう。この縁の幅は画像によって変わる（数px〜十数px）ため、
+        # 固定量ではなく「末尾から続く単色帯」の長さを都度検出してまるごと取り除く。
+        # 次の画像側には同じ位置に縁が写っていないため、その分だけ次の画像側から使う。
+        edge_len = 0
+        gray_tail = cv2.cvtColor(base_list[:, x_start:x_end], cv2.COLOR_BGR2GRAY)
+        for y in range(base_list.shape[0] - 1, max(-1, base_list.shape[0] - row_period - 1), -1):
+            if gray_tail[y].std() < 3:
+                edge_len += 1
+            else:
+                break
+        trim = max(margin, edge_len)
+
+        base_list = base_list[:-trim] if trim > 0 else base_list
+        new_part = next_list[max(0, cut_point - trim):, :]
         base_list = np.vstack((base_list, new_part))
 
     return np.vstack((final_header, base_list, final_footer))
@@ -324,23 +333,6 @@ if st.session_state.image_list:
 
     st.write("---")
 
-    with st.expander("⚙️ 詳細設定（自動判定がうまくいかない場合のみ）"):
-        st.caption(
-            "通常はヘッダー・フッターの範囲を1枚目と2枚目の画像から自動で判定します。"
-            "自動判定がうまくいかない場合のみ、下のチェックを入れて手動で比率を指定してください。"
-        )
-        manual_override = st.checkbox("手動でヘッダー・フッター比率を指定する", value=False)
-        manual_header_ratio = manual_footer_ratio = None
-        if manual_override:
-            manual_header_ratio = st.slider(
-                "ヘッダー比率（上部のアイコン・ステータス欄などが占める割合）",
-                min_value=0.10, max_value=0.60, value=0.33, step=0.01,
-            )
-            manual_footer_ratio = st.slider(
-                "フッター比率（下部の「閉じる」ボタンなどが占める割合）",
-                min_value=0.02, max_value=0.30, value=0.13, step=0.01,
-            )
-
     col1, col2 = st.columns([1, 2])
     with col1:
         if st.button("🗑️ すべてリセット", type="secondary"):
@@ -355,12 +347,9 @@ if st.session_state.image_list:
         if len(st.session_state.image_list) >= 2:
             if st.button("✨ 結合スタート！", type="primary"):
                 with st.spinner("画像を結合しています... 少々お待ちください。"):
-                    manual_ratio = (manual_header_ratio, manual_footer_ratio) if manual_override else None
-
                     try:
                         final_img = stitch_images(
                             st.session_state.image_list,
-                            manual_ratio=manual_ratio,
                         )
                     except StitchError as e:
                         st.error(
