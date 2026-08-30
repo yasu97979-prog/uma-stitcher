@@ -20,6 +20,10 @@ if 'image_list' not in st.session_state:
     st.session_state.image_list = []
 if 'last_pasted_hash' not in st.session_state:
     st.session_state.last_pasted_hash = None
+if 'freed_slots' not in st.session_state:
+    # 削除された枠の番号（インデックス）を保持しておき、
+    # 次に貼り付けた画像を末尾ではなくこの位置に差し込むために使う
+    st.session_state.freed_slots = []
 
 # --- 貼り付けボタン ---
 # ※ブラウザのClipboard APIを使うため、初回はブラウザ側の許可ダイアログが出ることがあります。
@@ -42,7 +46,15 @@ if paste_result.image_data is not None:
     # 画像内容のハッシュで直前の貼り付けと同一かどうかを判定する
     img_hash = hashlib.md5(img_bgr.tobytes()).hexdigest()
     if img_hash != st.session_state.last_pasted_hash:
-        st.session_state.image_list.append(img_bgr)
+        if st.session_state.freed_slots:
+            # 空いている枠があれば、一番若い番号の枠に差し込む
+            st.session_state.freed_slots.sort()
+            slot = st.session_state.freed_slots.pop(0)
+            slot = min(slot, len(st.session_state.image_list))  # 念のため範囲を安全に丸める
+            st.session_state.image_list.insert(slot, img_bgr)
+        else:
+            # 空き枠が無ければ今まで通り末尾に追加
+            st.session_state.image_list.append(img_bgr)
         st.session_state.last_pasted_hash = img_hash
         st.rerun()
 
@@ -60,6 +72,7 @@ if st.session_state.image_list:
             # 個別削除ボタン
             if st.button(f"❌ {idx+1}を削除", key=f"del_btn_{idx}"):
                 st.session_state.image_list.pop(idx)
+                st.session_state.freed_slots.append(idx)
                 st.rerun()
 
     st.write("---")
@@ -69,6 +82,7 @@ if st.session_state.image_list:
         if st.button("🗑️ すべてリセット", type="secondary"):
             st.session_state.image_list = []
             st.session_state.last_pasted_hash = None
+            st.session_state.freed_slots = []
             st.rerun()
 
     with col2:
