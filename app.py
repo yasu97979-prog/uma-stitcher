@@ -158,8 +158,25 @@ def stitch_images(images, manual_ratio=None, threshold=0.75, search_ratio=0.85):
         search_area = next_list[:max_search_h, x_start:x_end]
 
         res = cv2.matchTemplate(search_area, template, cv2.TM_CCOEFF_NORMED)
-        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
-        match_y = max_loc[1]
+        scores = res[:, 0]
+
+        # 「○○レース場」のように非常によく似た行が並ぶ場合、1行分ズレた位置の方が
+        # わずかに高いスコアになってしまうことがある。そこで単純な最高スコアではなく、
+        # 「閾値を超える最初の（＝一番早い）候補」を採用する。重なりが本当に存在するなら、
+        # それは必ず一番浅い位置で最初に見つかるはずなので、この方が誤マッチに強い。
+        match_y, max_val = None, -1.0
+        in_cluster = False
+        for y in range(len(scores)):
+            if scores[y] >= threshold:
+                in_cluster = True
+                if scores[y] > max_val:
+                    max_val = scores[y]
+                    match_y = y
+            elif in_cluster:
+                break
+        if match_y is None:
+            min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
+            match_y = max_loc[1]
 
         if max_val < threshold:
             # i番目（0-indexed）は表示上「i+1枚目」なので、直前の画像は「i枚目」
@@ -215,9 +232,9 @@ def render_copy_button(png_bytes):
 
 
 # 画面を広く使う設定
-st.set_page_config(page_title="ウマ娘 画像結合", layout="wide")
+st.set_page_config(page_title="ウマ娘 因子スクロール結合", layout="wide")
 
-st.title("🐴 ウマ娘 画像結合ツール")
+st.title("🐴 ウマ娘 因子スクロール自動結合ツール")
 
 st.markdown("""
 PCの方は「📋 画像を貼り付け」ボタンでクリップボードの画像をそのまま追加できます
