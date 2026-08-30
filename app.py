@@ -9,20 +9,21 @@ from streamlit_paste_button import paste_image_button as pbutton
 
 class StitchError(Exception):
     """画像結合に失敗した際に、問題のあった画像番号を保持して投げる例外"""
-    def __init__(self, index_a, index_b, score):
+    def __init__(self, index_a, index_b):
         self.index_a = index_a
         self.index_b = index_b
-        self.score = score
-        super().__init__(
-            f"{index_a}枚目と{index_b}枚目の間で十分な重なりが検出できませんでした"
-            f"（一致度: {score:.2f} / 必要値: 0.75）"
-        )
+        super().__init__(f"{index_a}枚目と{index_b}枚目の間で十分な重なりが検出できませんでした")
 
 
-def stitch_images(images, header_ratio=0.33, footer_ratio=0.13, threshold=0.75):
+def stitch_images(images, header_ratio=0.33, footer_ratio=0.13, threshold=0.75, search_ratio=0.5):
     """
     画像リストを縦方向に結合する。
     重なりが不十分な箇所があれば StitchError を投げて処理を中断する。
+
+    search_ratio: 次の画像のうち、上から何割の範囲だけをマッチング候補として探すか。
+    因子リストには似たようなアイコン・行が多く並ぶため、探索範囲を全体にすると
+    離れた場所にある別の行を誤って「重なり」として検出してしまうことがある。
+    範囲を上側に制限することで、そうした誤検出を防ぐ。
     """
     base_img = images[0]
     base_H, base_W = base_img.shape[:2]
@@ -53,7 +54,10 @@ def stitch_images(images, header_ratio=0.33, footer_ratio=0.13, threshold=0.75):
 
         next_list = img_next[curr_header_h: curr_H - curr_footer_h, :]
         template = base_list[-template_h:, x_start:x_end]
-        search_area = next_list[:, x_start:x_end]
+
+        # 探索範囲を上側に限定し、離れた場所での誤マッチを防ぐ
+        max_search_h = max(template_h * 2, int(next_list.shape[0] * search_ratio))
+        search_area = next_list[:max_search_h, x_start:x_end]
 
         res = cv2.matchTemplate(search_area, template, cv2.TM_CCOEFF_NORMED)
         min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
@@ -61,7 +65,7 @@ def stitch_images(images, header_ratio=0.33, footer_ratio=0.13, threshold=0.75):
 
         if max_val < threshold:
             # i番目（0-indexed）は表示上「i+1枚目」なので、直前の画像は「i枚目」
-            raise StitchError(index_a=i, index_b=i + 1, score=max_val)
+            raise StitchError(index_a=i, index_b=i + 1)
 
         new_part = next_list[match_y + template_h:, :]
         base_list = np.vstack((base_list, new_part))
@@ -195,15 +199,11 @@ if st.session_state.image_list:
                         st.error(
                             f"❌ 結合に失敗しました。{e.index_a}枚目と{e.index_b}枚目の"
                             f"重なりが不足しているため、正しく結合できません。\n\n"
-                            f"（一致度: {e.score:.2f} / 必要値: 0.75）\n\n"
                             f"{e.index_a}枚目・{e.index_b}枚目のスクリーンショットを撮り直し、"
                             f"重なりを大きくしてから再度お試しください。"
                         )
                     else:
                         st.success("🎉 結合が完了しました！")
-
-                        final_img_rgb = cv2.cvtColor(final_img, cv2.COLOR_BGR2RGB)
-                        st.image(final_img_rgb, caption="完成画像", use_container_width=True)
 
                         is_success, buffer = cv2.imencode(".png", final_img)
                         if is_success:
@@ -218,5 +218,8 @@ if st.session_state.image_list:
                                 )
                             with copy_col:
                                 render_copy_button(png_bytes)
+
+                        final_img_rgb = cv2.cvtColor(final_img, cv2.COLOR_BGR2RGB)
+                        st.image(final_img_rgb, caption="完成画像", use_container_width=True)
         else:
             st.info("💡 結合には2枚以上の画像が必要です。上のボタンから画像を貼り付けてください。")
