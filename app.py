@@ -1,39 +1,29 @@
-import streamlit as st
+import tkinter as tk
+from tkinter import messagebox
 import cv2
 import numpy as np
-import hashlib
-import base64
-import streamlit.components.v1 as components
-from streamlit_paste_button import paste_image_button as pbutton
+import mss
+import io
+import ctypes
+from ctypes import wintypes
+from PIL import Image
+import keyboard
 
-
+# ==============================================================================
+# Claude様 作成の高度な画像結合ロジック
+# ==============================================================================
 class StitchError(Exception):
-    """画像結合に失敗した際に、問題のあった画像番号を保持して投げる例外"""
     def __init__(self, index_a, index_b):
         self.index_a = index_a
         self.index_b = index_b
         super().__init__(f"{index_a}枚目と{index_b}枚目の間で十分な重なりが検出できませんでした")
 
-
 def detect_header_footer_ratio(img_a, img_b, diff_threshold=15, min_run=6, x_frac=(0.25, 0.85)):
-    """
-    同じウィンドウ・同じキャラをスクロールしただけの2枚（img_a, img_b）を比較し、
-    「毎回まったく同じ絵になっている＝スクロールしない部分（ヘッダー／フッター）」を自動検出する。
-
-    やり方：中央の帯（x_frac範囲）で1行ごとの画素差分を計算し、
-    上から見て差分が続けて大きくなり始める位置＝ヘッダーの終わり、
-    下から見て同様の位置＝フッターの始まり、とみなす。
-
-    2枚の画像の縦幅が異なる場合（表示されているリストの行数が違う場合）でも、
-    ヘッダーは「両画像の上端」、フッターは「両画像の下端」をそれぞれ基準に
-    比較することで正しく検出できるようにしている。
-    """
     Ha, Wa = img_a.shape[:2]
     Hb, Wb = img_b.shape[:2]
     W = min(Wa, Wb)
     x_start, x_end = int(W * x_frac[0]), int(W * x_frac[1])
 
-    # ヘッダー：両画像の「上端」を基準に比較する
     H_top = min(Ha, Hb)
     a_top = img_a[:H_top, x_start:x_end].astype(np.int16)
     b_top = img_b[:H_top, x_start:x_end].astype(np.int16)
@@ -44,7 +34,6 @@ def detect_header_footer_ratio(img_a, img_b, diff_threshold=15, min_run=6, x_fra
             header_h = y
             break
 
-    # フッター：両画像の「下端」を基準に比較する（縦幅が違っても正しく揃う）
     H_bot = min(Ha, Hb)
     a_bot = img_a[Ha - H_bot:, x_start:x_end].astype(np.int16)
     b_bot = img_b[Hb - H_bot:, x_start:x_end].astype(np.int16)
@@ -58,19 +47,11 @@ def detect_header_footer_ratio(img_a, img_b, diff_threshold=15, min_run=6, x_fra
     header_ratio = header_h / Ha
     footer_ratio = footer_h / Ha
 
-    # 明らかにおかしい結果（検出失敗）の場合はNoneを返し、呼び出し側でデフォルト値にフォールバックさせる
     if header_ratio <= 0 or header_ratio >= 0.7 or footer_ratio >= 0.5 or (header_ratio + footer_ratio) >= 0.85:
         return None
-
     return header_ratio, footer_ratio
 
-
 def estimate_row_period(img_list, x_start, x_end, min_period=15, max_period=150):
-    """
-    因子・スキルの各行が繰り返される「周期（1行の高さ）」を自己相関から推定する。
-    テンプレートのサイズをこれより小さくすることで、重なりがわずか1〜2行しか
-    無い場合でも、テンプレートが行の境界をまたいで不安定になるのを防ぐ。
-    """
     gray = cv2.cvtColor(img_list[:, x_start:x_end], cv2.COLOR_BGR2GRAY).astype(np.float64)
     signal = gray.mean(axis=1)
     signal = signal - signal.mean()
@@ -86,20 +67,7 @@ def estimate_row_period(img_list, x_start, x_end, min_period=15, max_period=150)
             best_p = p
     return best_p
 
-
 def stitch_images(images, manual_ratio=None, threshold=0.75, search_ratio=0.85):
-    """
-    画像リストを縦方向に結合する。
-    重なりが不十分な箇所があれば StitchError を投げて処理を中断する。
-
-    manual_ratio: (header_ratio, footer_ratio) を指定すると自動判定の代わりに使う。
-                  Noneなら各ペアごとに自動判定する（機種・キャラが混在していても安定するように）。
-
-    search_ratio: 次の画像のうち、上から何割の範囲までをマッチング候補として探すか。
-    因子リストには似たようなアイコン・行が多く並ぶため、探索範囲を全体にすると
-    離れた場所にある別の行を誤って「重なり」として検出してしまうことがある。
-    ある程度上側に制限しつつ、正しい重なり位置を取りこぼさない範囲に留める。
-    """
     base_img = images[0]
     base_H, base_W = base_img.shape[:2]
 
@@ -128,8 +96,6 @@ def stitch_images(images, manual_ratio=None, threshold=0.75, search_ratio=0.85):
             new_H = int(next_H * scale)
             img_next = cv2.resize(img_next, (base_W, new_H))
 
-        # このペア専用のヘッダー・フッター比率を判定する（機種・キャラが途中で変わっても
-        # 前後のペアの影響を受けないように、毎回そのペアの生画像同士で判定し直す）。
         if manual_ratio is not None:
             pair_header_ratio, pair_footer_ratio = header_ratio, footer_ratio
         else:
@@ -142,9 +108,6 @@ def stitch_images(images, manual_ratio=None, threshold=0.75, search_ratio=0.85):
 
         next_list = img_next[curr_header_h: curr_H - curr_footer_h, :]
 
-        # 行の高さ（周期）を検出し、テンプレートは「1行より少し小さいサイズ」にする。
-        # これにより、重なりが1〜2行しか無いケースでもテンプレートが行の境界を
-        # またいで不安定になることを防ぎ、マッチ精度が大幅に上がる。
         row_period = estimate_row_period(base_list, x_start, x_end)
         if row_period is None:
             row_period = max(20, int(base_H * 0.05))
@@ -152,8 +115,6 @@ def stitch_images(images, manual_ratio=None, threshold=0.75, search_ratio=0.85):
         margin = max(1, int(row_period * 0.1))
 
         template = base_list[-(template_h + margin):-margin, x_start:x_end]
-
-        # 探索範囲を上側寄りに限定し、離れた場所での誤マッチを防ぐ
         max_search_h = max(template_h * 4, int(next_list.shape[0] * search_ratio))
         search_area = next_list[:max_search_h, x_start:x_end]
 
@@ -162,15 +123,8 @@ def stitch_images(images, manual_ratio=None, threshold=0.75, search_ratio=0.85):
         match_y = max_loc[1]
 
         if max_val < threshold:
-            # i番目（0-indexed）は表示上「i+1枚目」なので、直前の画像は「i枚目」
             raise StitchError(index_a=i, index_b=i + 1)
 
-        # base_listはテンプレートの開始位置（マッチした行の途中）までで打ち切り、
-        # それより先はnext_list側のデータで丸ごと置き換える。
-        # base_listの末尾は、ウィンドウ端で行が部分的にしか見えていないことがあり、
-        # そのまま残すと「見切れた行」の直後に次の画像の「完全な同じ行」が
-        # 続いてしまい、行が潰れて見える原因になる。マッチ位置から先を
-        # まるごとnext_list側に差し替えることで、この問題を避けられる。
         cut_in_base = base_list.shape[0] - template_h - margin
         base_list = base_list[:max(0, cut_in_base)]
         new_part = next_list[match_y:, :]
@@ -178,198 +132,149 @@ def stitch_images(images, manual_ratio=None, threshold=0.75, search_ratio=0.85):
 
     return np.vstack((final_header, base_list, final_footer))
 
+# ==============================================================================
+# クリップボードへ画像をコピーする機能
+# ==============================================================================
+def copy_image_to_clipboard(cv_img):
+    output = io.BytesIO()
+    image = Image.fromarray(cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB))
+    image.convert("RGB").save(output, "BMP")
+    data = output.getvalue()[14:] 
 
-def render_copy_button(png_bytes):
-    """結合済み画像をクリップボードにコピーするボタンをHTML/JSで描画する"""
-    img_b64 = base64.b64encode(png_bytes).decode()
-    copy_html = f"""
-    <div>
-      <button id="copyImgBtn" style="background-color:#34a853;color:white;border:none;
-        padding:8px 18px;border-radius:6px;font-size:15px;cursor:pointer;">
-        📋 画像をコピー
-      </button>
-      <span id="copyImgStatus" style="margin-left:10px;font-size:14px;"></span>
-    </div>
-    <script>
-    const btn = document.getElementById('copyImgBtn');
-    btn.addEventListener('click', async () => {{
-        const statusEl = document.getElementById('copyImgStatus');
-        try {{
-            const base64Data = "{img_b64}";
-            const byteCharacters = atob(base64Data);
-            const byteNumbers = new Array(byteCharacters.length);
-            for (let i = 0; i < byteCharacters.length; i++) {{
-                byteNumbers[i] = byteCharacters.charCodeAt(i);
-            }}
-            const byteArray = new Uint8Array(byteNumbers);
-            const blob = new Blob([byteArray], {{ type: 'image/png' }});
-            await navigator.clipboard.write([new ClipboardItem({{ 'image/png': blob }})]);
-            statusEl.innerText = '✅ コピーしました！';
-        }} catch (err) {{
-            statusEl.innerText = '❌ コピーに失敗しました（' + err + '）';
-        }}
-    }});
-    </script>
-    """
-    components.html(copy_html, height=45)
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
 
+    kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+    kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+    kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalLock.restype = wintypes.LPVOID
+    kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalUnlock.restype = wintypes.BOOL
+    user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+    user32.SetClipboardData.restype = wintypes.HANDLE
 
-# 画面を広く使う設定
-st.set_page_config(page_title="ウマ娘 画像結合", layout="wide")
+    user32.OpenClipboard(0)
+    user32.EmptyClipboard()
 
-st.title("🐴 ウマ娘 画像結合ツール")
+    hGlobalMem = kernel32.GlobalAlloc(0x0042, len(data))
+    pGlobalMem = kernel32.GlobalLock(hGlobalMem)
+    ctypes.memmove(pGlobalMem, data, len(data))
+    kernel32.GlobalUnlock(hGlobalMem)
 
-st.markdown("""
-PCの方は「📋 画像を貼り付け」ボタンでクリップボードの画像をそのまま追加できます
-（フォルダ選択は開きません）。スマホの方は「📱 スマホの方はこちら」から
-写真フォルダを開いて複数枚まとめて選択してください。
-""")
+    user32.SetClipboardData(8, hGlobalMem)
+    user32.CloseClipboard()
 
-# --- データの保持 ---
-if 'image_list' not in st.session_state:
-    st.session_state.image_list = []
-if 'last_pasted_hash' not in st.session_state:
-    st.session_state.last_pasted_hash = None
-if 'freed_slots' not in st.session_state:
-    # 削除された枠の番号（インデックス）を保持しておき、
-    # 次に貼り付けた画像を末尾ではなくこの位置に差し込むために使う
-    st.session_state.freed_slots = []
-if 'processed_file_ids' not in st.session_state:
-    st.session_state.processed_file_ids = set()
-if 'widget_version' not in st.session_state:
-    # リセット時にこれを増やし、貼り付けボタン／アップローダーのkeyを変えることで
-    # ウィジェット自体が保持している「選択済みの画像」を強制的にクリアする
-    st.session_state.widget_version = 0
+# ==============================================================================
+# 手動キャプチャ型 デスクトップアプリGUI
+# ==============================================================================
+class ManualStitcherApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("🐴 手動スクロール結合ツール")
+        self.root.geometry("450x800")
+        self.root.attributes("-topmost", True)
 
+        try:
+            self.root.attributes("-transparentcolor", "magenta")
+        except Exception:
+            pass
 
-def add_image(img_bgr):
-    """画像1枚をimage_listに追加する（空き枠があればそこに、無ければ末尾に）"""
-    if st.session_state.freed_slots:
-        st.session_state.freed_slots.sort()
-        slot = st.session_state.freed_slots.pop(0)
-        slot = min(slot, len(st.session_state.image_list))  # 念のため範囲を安全に丸める
-        st.session_state.image_list.insert(slot, img_bgr)
-    else:
-        st.session_state.image_list.append(img_bgr)
+        self.captured_images = []
+        self.border_width = 4 
 
+        # --- コントロールパネル ---
+        self.ctrl_frame = tk.Frame(root, bg="#f8f9fa", bd=1, relief=tk.RAISED)
+        self.ctrl_frame.pack(side=tk.TOP, fill=tk.X)
 
-# --- 画像の追加方法（PC / スマホで使い分け） ---
-paste_col, upload_col = st.columns(2)
-wv = st.session_state.widget_version
+        self.capture_btn = tk.Button(self.ctrl_frame, text="📸 キャプチャ(X) [0枚]", command=self.capture_frame, 
+                                     bg="#34a853", fg="white", font=("Arial", 11, "bold"))
+        self.capture_btn.pack(side=tk.LEFT, padx=3, pady=5)
 
-with paste_col:
-    st.caption("🖥️ PCの方はこちら（フォルダは開きません）")
-    # ※ブラウザのClipboard APIを使うため、初回はブラウザ側の許可ダイアログが出ることがあります。
-    #   Chrome / Edge / Safari で動作確認済み。Firefoxは非対応です。
-    paste_result = pbutton(
-        label="📋 画像を貼り付け",
-        text_color="#ffffff",
-        background_color="#4285f4",
-        hover_background_color="#3367d6",
-        key=f"paste_button_{wv}",
-    )
+        # ★ 新規追加: 1枚戻す(Undo)ボタン
+        self.undo_btn = tk.Button(self.ctrl_frame, text="↩️ 戻す(C)", command=self.undo_capture, 
+                                  bg="#fbbc04", fg="black", font=("Arial", 10, "bold"))
+        self.undo_btn.pack(side=tk.LEFT, padx=3, pady=5)
 
-    if paste_result.image_data is not None:
-        # PIL Image -> OpenCV(BGR) に変換
-        pil_img = paste_result.image_data.convert("RGB")
-        img_array = np.array(pil_img)
-        img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+        self.stitch_btn = tk.Button(self.ctrl_frame, text="✨ 結合", command=self.process_and_copy, 
+                                    bg="#4285f4", fg="white", font=("Arial", 11, "bold"))
+        self.stitch_btn.pack(side=tk.LEFT, padx=3, pady=5)
 
-        # 同じ貼り付けイベントを再実行（rerun）のたびに重複追加しないよう、
-        # 画像内容のハッシュで直前の貼り付けと同一かどうかを判定する
-        img_hash = hashlib.md5(img_bgr.tobytes()).hexdigest()
-        if img_hash != st.session_state.last_pasted_hash:
-            add_image(img_bgr)
-            st.session_state.last_pasted_hash = img_hash
-            st.rerun()
+        self.reset_btn = tk.Button(self.ctrl_frame, text="🗑️ リセット", command=self.reset_images, 
+                                   bg="#ea4335", fg="white", font=("Arial", 9))
+        self.reset_btn.pack(side=tk.RIGHT, padx=3, pady=5)
 
-with upload_col:
-    st.caption("📱 スマホの方はこちら（複数選択可）")
-    uploaded_files = st.file_uploader(
-        "画像を選択",
-        type=["png", "jpg", "jpeg"],
-        accept_multiple_files=True,
-        key=f"mobile_uploader_{wv}",
-        label_visibility="collapsed",
-    )
+        self.frame_canvas = tk.Canvas(root, bg="magenta", highlightthickness=self.border_width, highlightbackground="red")
+        self.frame_canvas.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True)
 
-    if uploaded_files:
-        new_added = False
-        for f in uploaded_files:
-            # まだ読み込んでいない新しいファイルだけを処理する
-            if f.file_id not in st.session_state.processed_file_ids:
-                st.session_state.processed_file_ids.add(f.file_id)
-                file_bytes = f.read()
-                img_array = np.frombuffer(file_bytes, np.uint8)
-                img_bgr = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-                if img_bgr is not None:
-                    add_image(img_bgr)
-                new_added = True
-        if new_added:
-            st.rerun()
+        try:
+            keyboard.add_hotkey('x', self.trigger_capture)
+            keyboard.add_hotkey('c', self.trigger_undo) # ★ Cキーの監視を追加
+        except Exception as e:
+            print(f"ホットキーの登録に失敗しました: {e}")
 
-# --- プレビュー・結合エリア ---
-if st.session_state.image_list:
-    st.write("---")
-    st.subheader(f"📸 読み込み済みの画像 ({len(st.session_state.image_list)}枚)")
+    def trigger_capture(self):
+        self.root.after(0, self.capture_frame)
 
-    # 5列に分割してサムネイルを並べる
-    cols = st.columns(5)
-    for idx, img in enumerate(st.session_state.image_list):
-        with cols[idx % 5]:
-            img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            st.image(img_rgb, caption=f"{idx+1}枚目", use_container_width=True)
-            # 個別削除ボタン
-            if st.button(f"❌ {idx+1}を削除", key=f"del_btn_{idx}"):
-                st.session_state.image_list.pop(idx)
-                st.session_state.freed_slots.append(idx)
-                st.rerun()
+    def trigger_undo(self):
+        self.root.after(0, self.undo_capture)
 
-    st.write("---")
+    def capture_frame(self):
+        x = self.frame_canvas.winfo_rootx() + self.border_width
+        y = self.frame_canvas.winfo_rooty() + self.border_width
+        w = self.frame_canvas.winfo_width() - (self.border_width * 2)
+        h = self.frame_canvas.winfo_height() - (self.border_width * 2)
+        
+        monitor = {"top": y, "left": x, "width": w, "height": h}
 
-    col1, col2 = st.columns([1, 2])
-    with col1:
-        if st.button("🗑️ すべてリセット", type="secondary"):
-            st.session_state.image_list = []
-            st.session_state.last_pasted_hash = None
-            st.session_state.freed_slots = []
-            st.session_state.processed_file_ids = set()
-            st.session_state.widget_version += 1  # ウィジェットのkeyを変え、選択状態を強制クリア
-            st.rerun()
+        with mss.mss() as sct:
+            sct_img = sct.grab(monitor)
+            img = np.array(sct_img)
+            img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+            
+            self.captured_images.append(img)
+            
+        count = len(self.captured_images)
+        self.capture_btn.config(text=f"📸 キャプチャ(X) [{count}枚]")
+        
+        self.frame_canvas.config(highlightbackground="blue")
+        self.root.after(150, lambda: self.frame_canvas.config(highlightbackground="red"))
 
-    with col2:
-        if len(st.session_state.image_list) >= 2:
-            if st.button("✨ 結合スタート！", type="primary"):
-                with st.spinner("画像を結合しています... 少々お待ちください。"):
-                    try:
-                        final_img = stitch_images(
-                            st.session_state.image_list,
-                        )
-                    except StitchError as e:
-                        st.error(
-                            f"❌ 結合に失敗しました。{e.index_a}枚目と{e.index_b}枚目の"
-                            f"重なりが不足しているため、正しく結合できません。\n\n"
-                            f"{e.index_a}枚目・{e.index_b}枚目のスクリーンショットを撮り直し、"
-                            f"重なりを大きくしてから再度お試しください。"
-                        )
-                    else:
-                        st.success("🎉 結合が完了しました！")
+    def undo_capture(self):
+        """直前にキャプチャした画像を1枚削除する"""
+        if len(self.captured_images) > 0:
+            self.captured_images.pop() # リストの末尾（最後）の画像を削除
+            count = len(self.captured_images)
+            self.capture_btn.config(text=f"📸 キャプチャ(X) [{count}枚]")
+            
+            # 戻したことが視覚的にわかるように枠を「黄色」に光らせる
+            self.frame_canvas.config(highlightbackground="yellow")
+            self.root.after(150, lambda: self.frame_canvas.config(highlightbackground="red"))
 
-                        is_success, buffer = cv2.imencode(".png", final_img)
-                        if is_success:
-                            png_bytes = buffer.tobytes()
-                            dl_col, copy_col = st.columns([1, 1])
-                            with dl_col:
-                                st.download_button(
-                                    label="📥 完成画像をダウンロード",
-                                    data=png_bytes,
-                                    file_name="uma_stitched_result.png",
-                                    mime="image/png",
-                                )
-                            with copy_col:
-                                render_copy_button(png_bytes)
+    def reset_images(self):
+        self.captured_images = []
+        self.capture_btn.config(text="📸 キャプチャ(X) [0枚]")
 
-                        final_img_rgb = cv2.cvtColor(final_img, cv2.COLOR_BGR2RGB)
-                        st.image(final_img_rgb, caption="完成画像", use_container_width=True)
-        else:
-            st.info("💡 結合には2枚以上の画像が必要です。上のボタンから画像を貼り付けてください。")
+    def process_and_copy(self):
+        if len(self.captured_images) < 2:
+            messagebox.showwarning("警告", "結合には2枚以上のキャプチャが必要です！")
+            return
+
+        original_text = self.stitch_btn.cget("text")
+        self.stitch_btn.config(text="⚙️ 結合中...", bg="orange")
+        self.root.update()
+
+        try:
+            final_img = stitch_images(self.captured_images)
+            copy_image_to_clipboard(final_img)
+            messagebox.showinfo("成功", "🎉 画像の結合とコピーに成功しました！\n\nCtrl+Vでどこにでも貼り付けられます。")
+        except StitchError as e:
+            messagebox.showerror("結合エラー", f"❌ 結合に失敗しました。\n{e}\n\n「↩️ 戻す(C)」を押して最後の1枚を取り消し、重なる部分を増やしてキャプチャし直してみてください。")
+        except Exception as e:
+            messagebox.showerror("エラー", f"❌ 予期せぬエラーが発生しました:\n{e}")
+        finally:
+            self.stitch_btn.config(text=original_text, bg="#4285f4")
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = ManualStitcherApp(root)
+    root.mainloop()
