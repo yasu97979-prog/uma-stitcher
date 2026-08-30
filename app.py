@@ -6,65 +6,90 @@ import numpy as np
 st.set_page_config(page_title="ウマ娘 因子スクロール結合", layout="wide")
 
 # ========================================================
-# 【超重要】お客様のご要望通り、邪魔なUpload枠を完全に消去する魔法のCSS
+# 魔法のCSS：アップローダーを「ペースト専用カバー」で覆い隠す
 # ========================================================
 st.markdown("""
 <style>
-/* アップロード枠とUploadボタンを画面から完全に消し去る（機能だけ裏で残す） */
+/* 親枠の基準位置を設定 */
 [data-testid="stFileUploader"] {
-    position: absolute !important;
+    position: relative !important;
+    margin-bottom: 20px !important;
+}
+/* 不要なラベルテキストを隠す */
+[data-testid="stFileUploader"] label {
+    display: none !important;
+}
+/* 本来のアップロード枠（クリックすると開く元凶）を透明にして見えなくする */
+/* ※完全に消去(width:0)するとペーストも無効化されるため、透明にして残します */
+[data-testid="stFileUploadDropzone"] {
     opacity: 0 !important;
-    height: 0 !important;
-    width: 0 !important;
-    z-index: -999 !important;
-    pointer-events: none !important;
+}
+/* 上から「クリックをせき止めるカバー」を被せる */
+[data-testid="stFileUploader"]::after {
+    content: "🖱️ ここをクリックしてから 【 Ctrl + V 】 でペースト！ (ファイル選択画面は開きません)";
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    background-color: #f4f8fb !important;
+    border: 3px dashed #4285f4 !important;
+    border-radius: 10px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    text-align: center !important;
+    padding: 10px !important;
+    font-size: 16px !important;
+    font-weight: bold !important;
+    color: #4285f4 !important;
+    z-index: 999 !important;
+    cursor: pointer !important;
 }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🐴 ウマ娘 画像結合ツール")
-st.info("💡 **【完全ペースト専用版】** 邪魔な「Upload」ボタンを完全に消去しました！\nこの画面の**どこでもいいので一度クリック**し、そのまま **Ctrl+V (Cmd+V)** を連打するだけで画像が次々と追加されます。")
+st.title("🐴 ウマ娘 因子スクロール自動結合ツール")
 
 if 'image_list' not in st.session_state:
     st.session_state.image_list = []
-if 'processed_file_ids' not in st.session_state:
-    st.session_state.processed_file_ids = set()
+if 'uploader_key' not in st.session_state:
+    st.session_state.uploader_key = 0
 
-# --- 見えない画像ペースト受け皿 ---
-# 入力枠をリセットしないことで、2枚目以降のペーストも途切れず受け付ける
+# --- 画像ペーストエリア ---
 uploaded_files = st.file_uploader(
-    "hidden_uploader", 
+    "hidden", 
     type=["png", "jpg", "jpeg"],
     accept_multiple_files=True,
-    label_visibility="hidden"
+    key=f"uploader_{st.session_state.uploader_key}"
 )
 
+# 画像がペーストされた瞬間の処理
 if uploaded_files:
-    new_added = False
     for f in uploaded_files:
-        if f.file_id not in st.session_state.processed_file_ids:
-            st.session_state.processed_file_ids.add(f.file_id)
-            file_bytes = f.read()
-            img_array = np.frombuffer(file_bytes, np.uint8)
-            img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-            if img is not None:
-                st.session_state.image_list.append(img)
-            new_added = True
+        file_bytes = f.read()
+        img_array = np.frombuffer(file_bytes, np.uint8)
+        img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        if img is not None:
+            st.session_state.image_list.append(img)
     
-    if new_added:
-        st.rerun()
+    # 画像を追加したら、瞬時に枠をリセットして次のペーストに備える（2枚目以降を可能にする処理）
+    st.session_state.uploader_key += 1
+    st.rerun()
 
 # --- プレビュー・結合エリア ---
 if st.session_state.image_list:
     st.write("---")
     st.subheader(f"📸 読み込み済みの画像 ({len(st.session_state.image_list)}枚)")
     
+    # 5列に分割して、左から右へ綺麗にサムネイルを並べる
     cols = st.columns(5)
     for idx, img in enumerate(st.session_state.image_list):
         with cols[idx % 5]:
             img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             st.image(img_rgb, caption=f"{idx+1}枚目", use_container_width=True)
-            if st.button(f"❌ {idx+1}を削除", key=f"del_btn_{idx}"):
+            # 個別削除ボタン
+            if st.button(f"❌ {idx+1}を削除", key=f"del_btn_{idx}_{st.session_state.uploader_key}"):
                 st.session_state.image_list.pop(idx)
                 st.rerun()
                 
@@ -74,7 +99,7 @@ if st.session_state.image_list:
     with col1:
         if st.button("🗑️ すべてリセット", type="secondary"):
             st.session_state.image_list = []
-            st.session_state.processed_file_ids = set()
+            st.session_state.uploader_key += 1
             st.rerun()
             
     with col2:
@@ -146,4 +171,4 @@ if st.session_state.image_list:
                             mime="image/png"
                         )
         else:
-            st.info("💡 結合には2枚以上の画像が必要です。Ctrl+Vで画像を追加してください。")
+            st.info("💡 結合には2枚以上の画像が必要です。青い枠内をクリックしてCtrl+Vで画像を追加してください。")
