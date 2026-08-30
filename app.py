@@ -2,7 +2,107 @@ import streamlit as st
 import cv2
 import numpy as np
 import hashlib
+import base64
+import streamlit.components.v1 as components
 from streamlit_paste_button import paste_image_button as pbutton
+
+
+class StitchError(Exception):
+    """画像結合に失敗した際に、問題のあった画像番号を保持して投げる例外"""
+    def __init__(self, index_a, index_b, score):
+        self.index_a = index_a
+        self.index_b = index_b
+        self.score = score
+        super().__init__(
+            f"{index_a}枚目と{index_b}枚目の間で十分な重なりが検出できませんでした"
+            f"（一致度: {score:.2f} / 必要値: 0.75）"
+        )
+
+
+def stitch_images(images, header_ratio=0.33, footer_ratio=0.13, threshold=0.75):
+    """
+    画像リストを縦方向に結合する。
+    重なりが不十分な箇所があれば StitchError を投げて処理を中断する。
+    """
+    base_img = images[0]
+    base_H, base_W = base_img.shape[:2]
+
+    header_h = int(base_H * header_ratio)
+    footer_h = int(base_H * footer_ratio)
+
+    final_header = base_img[:header_h, :]
+    final_footer = base_img[base_H - footer_h:, :]
+    base_list = base_img[header_h: base_H - footer_h, :]
+
+    template_h = int(base_H * 0.05)
+    x_start = int(base_W * 0.25)
+    x_end = int(base_W * 0.85)
+
+    for i in range(1, len(images)):
+        img_next = images[i]
+        next_H, next_W = img_next.shape[:2]
+
+        if next_W != base_W:
+            scale = base_W / next_W
+            new_H = int(next_H * scale)
+            img_next = cv2.resize(img_next, (base_W, new_H))
+
+        curr_H = img_next.shape[0]
+        curr_header_h = int(curr_H * header_ratio)
+        curr_footer_h = int(curr_H * footer_ratio)
+
+        next_list = img_next[curr_header_h: curr_H - curr_footer_h, :]
+        template = base_list[-template_h:, x_start:x_end]
+        search_area = next_list[:, x_start:x_end]
+
+        res = cv2.matchTemplate(search_area, template, cv2.TM_CCOEFF_NORMED)
+        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
+        match_y = max_loc[1]
+
+        if max_val < threshold:
+            # i番目（0-indexed）は表示上「i+1枚目」なので、直前の画像は「i枚目」
+            raise StitchError(index_a=i, index_b=i + 1, score=max_val)
+
+        new_part = next_list[match_y + template_h:, :]
+        base_list = np.vstack((base_list, new_part))
+
+    return np.vstack((final_header, base_list, final_footer))
+
+
+def render_copy_button(png_bytes):
+    """結合済み画像をクリップボードにコピーするボタンをHTML/JSで描画する"""
+    img_b64 = base64.b64encode(png_bytes).decode()
+    copy_html = f"""
+    <div>
+      <button id="copyImgBtn" style="background-color:#34a853;color:white;border:none;
+        padding:8px 18px;border-radius:6px;font-size:15px;cursor:pointer;">
+        📋 画像をコピー
+      </button>
+      <span id="copyImgStatus" style="margin-left:10px;font-size:14px;"></span>
+    </div>
+    <script>
+    const btn = document.getElementById('copyImgBtn');
+    btn.addEventListener('click', async () => {{
+        const statusEl = document.getElementById('copyImgStatus');
+        try {{
+            const base64Data = "{img_b64}";
+            const byteCharacters = atob(base64Data);
+            const byteNumbers = new Array(byteCharacters.length);
+            for (let i = 0; i < byteCharacters.length; i++) {{
+                byteNumbers[i] = byteCharacters.charCodeAt(i);
+            }}
+            const byteArray = new Uint8Array(byteNumbers);
+            const blob = new Blob([byteArray], {{ type: 'image/png' }});
+            await navigator.clipboard.write([new ClipboardItem({{ 'image/png': blob }})]);
+            statusEl.innerText = '✅ コピーしました！';
+        }} catch (err) {{
+            statusEl.innerText = '❌ コピーに失敗しました（' + err + '）';
+        }}
+    }});
+    </script>
+    """
+    components.html(copy_html, height=45)
+
 
 # 画面を広く使う設定
 st.set_page_config(page_title="ウマ娘 因子スクロール結合", layout="wide")
@@ -89,69 +189,34 @@ if st.session_state.image_list:
         if len(st.session_state.image_list) >= 2:
             if st.button("✨ 結合スタート！", type="primary"):
                 with st.spinner("画像を結合しています... 少々お待ちください。"):
-                    images = st.session_state.image_list
-                    base_img = images[0]
-                    base_H, base_W = base_img.shape[:2]
-
-                    header_ratio = 0.33
-                    footer_ratio = 0.13
-                    header_h = int(base_H * header_ratio)
-                    footer_h = int(base_H * footer_ratio)
-
-                    final_header = base_img[:header_h, :]
-                    final_footer = base_img[base_H - footer_h:, :]
-                    base_list = base_img[header_h: base_H - footer_h, :]
-
-                    template_h = int(base_H * 0.05)
-                    x_start = int(base_W * 0.25)
-                    x_end = int(base_W * 0.85)
-
-                    warning_flag = False
-
-                    for i in range(1, len(images)):
-                        img_next = images[i]
-                        next_H, next_W = img_next.shape[:2]
-
-                        if next_W != base_W:
-                            scale = base_W / next_W
-                            new_H = int(next_H * scale)
-                            img_next = cv2.resize(img_next, (base_W, new_H))
-
-                        curr_H = img_next.shape[0]
-                        curr_header_h = int(curr_H * header_ratio)
-                        curr_footer_h = int(curr_H * footer_ratio)
-
-                        next_list = img_next[curr_header_h: curr_H - curr_footer_h, :]
-                        template = base_list[-template_h:, x_start:x_end]
-                        search_area = next_list[:, x_start:x_end]
-
-                        res = cv2.matchTemplate(search_area, template, cv2.TM_CCOEFF_NORMED)
-                        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
-                        match_y = max_loc[1]
-
-                        if max_val < 0.75:
-                            st.warning(f"⚠️ {i}枚目と{i+1}枚目で重なりが足りないか、ズレている可能性があります")
-                            warning_flag = True
-                            base_list = np.vstack((base_list, next_list))
-                        else:
-                            new_part = next_list[match_y + template_h:, :]
-                            base_list = np.vstack((base_list, new_part))
-
-                    final_img = np.vstack((final_header, base_list, final_footer))
-
-                    if not warning_flag:
+                    try:
+                        final_img = stitch_images(st.session_state.image_list)
+                    except StitchError as e:
+                        st.error(
+                            f"❌ 結合に失敗しました。{e.index_a}枚目と{e.index_b}枚目の"
+                            f"重なりが不足しているため、正しく結合できません。\n\n"
+                            f"（一致度: {e.score:.2f} / 必要値: 0.75）\n\n"
+                            f"{e.index_a}枚目・{e.index_b}枚目のスクリーンショットを撮り直し、"
+                            f"重なりを大きくしてから再度お試しください。"
+                        )
+                    else:
                         st.success("🎉 結合が完了しました！")
 
-                    final_img_rgb = cv2.cvtColor(final_img, cv2.COLOR_BGR2RGB)
-                    st.image(final_img_rgb, caption="完成画像", use_container_width=True)
+                        final_img_rgb = cv2.cvtColor(final_img, cv2.COLOR_BGR2RGB)
+                        st.image(final_img_rgb, caption="完成画像", use_container_width=True)
 
-                    is_success, buffer = cv2.imencode(".png", final_img)
-                    if is_success:
-                        st.download_button(
-                            label="📥 完成画像をダウンロード",
-                            data=buffer.tobytes(),
-                            file_name="uma_stitched_result.png",
-                            mime="image/png",
-                        )
+                        is_success, buffer = cv2.imencode(".png", final_img)
+                        if is_success:
+                            png_bytes = buffer.tobytes()
+                            dl_col, copy_col = st.columns([1, 1])
+                            with dl_col:
+                                st.download_button(
+                                    label="📥 完成画像をダウンロード",
+                                    data=png_bytes,
+                                    file_name="uma_stitched_result.png",
+                                    mime="image/png",
+                                )
+                            with copy_col:
+                                render_copy_button(png_bytes)
         else:
             st.info("💡 結合には2枚以上の画像が必要です。上のボタンから画像を貼り付けてください。")
