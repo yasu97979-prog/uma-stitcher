@@ -217,7 +217,7 @@ def render_copy_button(png_bytes):
 # 画面を広く使う設定
 st.set_page_config(page_title="ウマ娘 因子スクロール結合", layout="wide")
 
-st.title("🐴 ウマ娘 因子スクロール自動結合ツール")
+st.title("🐴 ウマ娘 画像結合ツール")
 
 st.markdown("""
 PCの方は「📋 画像を貼り付け」ボタンでクリップボードの画像をそのまま追加できます
