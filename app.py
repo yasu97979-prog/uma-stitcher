@@ -6,42 +6,27 @@ import numpy as np
 st.set_page_config(page_title="ウマ娘 因子スクロール結合", layout="wide")
 
 # ========================================================
-# 魔法のCSS：本物のアップロード枠を「画面外」に隠す
+# 魔法のCSS：ダイアログ起動を防ぎ、不要なボタンを消去する
 # ========================================================
 st.markdown("""
 <style>
-/* 本物のアップロード枠を画面の遥か上に飛ばして隠す */
-/* 完全に消去しないため、Ctrl+Vのペースト機能だけは生き続けます */
-[data-testid="stFileUploader"] {
-    position: absolute !important;
-    top: -9999px !important;
+/* 1. クリックを無効化し、フォルダ選択画面が絶対に開かないようにする */
+[data-testid="stFileUploadDropzone"] {
+    pointer-events: none !important;
 }
-
-/* ユーザーがクリックするための「ダミーの枠」のデザイン */
-.fake-focus-area {
-    background-color: #f4f8fb;
-    border: 3px dashed #4285f4;
-    border-radius: 10px;
-    padding: 40px 20px;
-    text-align: center;
-    font-size: 18px;
-    font-weight: bold;
-    color: #4285f4;
-    cursor: default;
-    margin-bottom: 20px;
+/* 2. 邪魔な「Upload (Browse files)」ボタンを消去 */
+[data-testid="stFileUploadDropzone"] button {
+    display: none !important;
+}
+/* 3. Streamlit標準の「アップロード済みのファイル名リスト」を非表示にする */
+[data-testid="stFileUploader"] ul {
+    display: none !important;
 }
 </style>
 """, unsafe_allow_html=True)
 
 st.title("🐴 ウマ娘 因子スクロール自動結合ツール")
-
-# クリックしてもダイアログが開かない、ただのテキスト枠
-st.markdown("""
-<div class="fake-focus-area">
-    🖱️ この青い枠の中を一度クリックしてから、そのまま 【 Ctrl + V 】 を連打してください！<br>
-    <span style="font-size:14px; color:#666;">（フォルダ選択画面は絶対に開きません。そのまま2枚目、3枚目とサクサク貼れます）</span>
-</div>
-""", unsafe_allow_html=True)
+st.info("💡 **【お詫びと完全修正】** 余計なプログラムをすべて排除しました。\n**灰色の枠のあたりを一度クリックしてから、そのまま Ctrl+V を連打してください。**（ダイアログは開かず、何枚でも連続で貼れます）")
 
 if 'image_list' not in st.session_state:
     st.session_state.image_list = []
@@ -50,9 +35,10 @@ if 'processed_file_ids' not in st.session_state:
 if 'uploader_key' not in st.session_state:
     st.session_state.uploader_key = 0
 
-# --- 見えない画像ペーストエリア（画面外） ---
+# --- 画像ペーストエリア ---
+# 【最重要】連続ペーストが途切れないよう、ここでは絶対に枠をリセットしません
 uploaded_files = st.file_uploader(
-    "hidden", 
+    "👇 枠のあたりをクリックして、Ctrl+V でペースト", 
     type=["png", "jpg", "jpeg"],
     accept_multiple_files=True,
     key=f"uploader_{st.session_state.uploader_key}"
@@ -87,6 +73,7 @@ if st.session_state.image_list:
         with cols[idx % 5]:
             img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             st.image(img_rgb, caption=f"{idx+1}枚目", use_container_width=True)
+            # 個別削除ボタン
             if st.button(f"❌ {idx+1}を削除", key=f"del_btn_{idx}_{st.session_state.uploader_key}"):
                 st.session_state.image_list.pop(idx)
                 st.rerun()
@@ -95,7 +82,7 @@ if st.session_state.image_list:
     
     col1, col2 = st.columns([1, 2])
     with col1:
-        # リセット時のみすべての記憶を消去する
+        # すべてリセットする時だけ、安全に枠を新品に戻す
         if st.button("🗑️ すべてリセット", type="secondary"):
             st.session_state.image_list = []
             st.session_state.processed_file_ids = set()
@@ -171,4 +158,4 @@ if st.session_state.image_list:
                             mime="image/png"
                         )
         else:
-            st.info("💡 結合には2枚以上の画像が必要です。青い枠内をクリックしてからCtrl+Vで画像を追加してください。")
+            st.info("💡 結合には2枚以上の画像が必要です。Ctrl+Vで画像を追加してください。")
