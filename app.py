@@ -5,27 +5,33 @@ import re
 
 st.set_page_config(page_title="ウマ娘 因子スクロール結合", layout="centered")
 
-st.title("🐴 ウマ娘 因子スクロール自動結合ツール")
+st.title("🐴 ウマ娘 画像結合ツール")
 st.write("枠内をクリックして **Ctrl+V (Cmd+V)** でスクショを1枚ずつ連続ペーストできます！")
 
-# セッション内で画像を保持
+# セッション内で画像と「アップローダーのリセット用キー」を保持
 if 'image_list' not in st.session_state:
     st.session_state.image_list = []
+if 'uploader_key' not in st.session_state:
+    st.session_state.uploader_key = 0
 
 # --- 画像ペースト・アップロードエリア ---
+# keyを動的に変更することで、1枚読み込むごとに枠を強制リセットする
 uploaded_file = st.file_uploader(
     "ここにスクショをペースト (Ctrl+V) またはファイルを選択", 
     type=["png", "jpg", "jpeg"],
-    key="uploader"
+    key=f"uploader_{st.session_state.uploader_key}"
 )
 
-# ペーストされたら即座にリストへ追加し、画面を更新
+# ペーストされたら即座にリストへ追加し、枠を空にして画面を更新
 if uploaded_file is not None:
     file_bytes = uploaded_file.read()
     img_array = np.frombuffer(file_bytes, np.uint8)
     img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
     if img is not None:
         st.session_state.image_list.append(img)
+    
+    # 無限ループ防止：読み込み終わったらアップローダーを空にする
+    st.session_state.uploader_key += 1
     st.rerun()
 
 # --- プレビュー・個別削除エリア ---
@@ -33,7 +39,9 @@ if st.session_state.image_list:
     st.write("---")
     st.subheader(f"📸 読み込み済みの画像 ({len(st.session_state.image_list)}枚)")
     
+    # 最大5列で綺麗にサムネイルを並べる
     num_cols = min(len(st.session_state.image_list), 5)
+    if num_cols == 0: num_cols = 1
     cols = st.columns(num_cols)
     
     for idx, img in enumerate(st.session_state.image_list):
