@@ -143,6 +143,10 @@ def count_boxes_in_range(img, y_start, y_end, row_period, x_pairs=((0.03, 0.48),
     誤認識しないよう右セルの範囲を少し内側に絞っている。また、行数で単純に整数の周期を
     掛け算すると、割り切れない端数が行を重ねるごとに蓄積して最後の方の行位置がずれるため、
     範囲全体を実際の行数で割った「正確な周期」を使って各行の位置を計算し直している。
+
+    判定はセルの上半分だけを見る。1個だけの単独行（右セルが本来空）の場合、
+    左の箱の角丸の影がわずかに右セル側のセル下端に薄くはみ出すことがあり、
+    セル全体で判定すると誤って「内容あり」と数えてしまうことがあるため。
     """
     W = img.shape[1]
     n_rows = max(0, int(round((y_end - y_start) / row_period)))
@@ -155,9 +159,10 @@ def count_boxes_in_range(img, y_start, y_end, row_period, x_pairs=((0.03, 0.48),
         ry1 = y_start + int(round((r + 1) * precise_period)) - 4
         if ry1 <= ry0 or ry1 > y_end:
             continue
+        ry_mid = ry0 + (ry1 - ry0) // 2
         for xs, xe in x_pairs:
             x0, x1 = int(W * xs), int(W * xe)
-            cell = img[ry0:ry1, x0:x1]
+            cell = img[ry0:ry_mid, x0:x1]
             if cell.size == 0:
                 continue
             mean = cell.reshape(-1, 3).mean(axis=0)
@@ -186,8 +191,11 @@ def count_inheritance_factors(img):
     """
     継承タブ：親・祖父母1・祖父母2ごとの因子数と合計を数える。
     各セクションの先頭3つ（青・ピンク・黄緑のカテゴリタグ）は因子として数えない。
-    セクションの終わりは、最後（祖父母2）以外は次のセクションの開始位置、
-    最後だけはリストの実際の終端（find_list_true_end）を使う。
+
+    セクションの終わりは、次のセクションの開始位置ではなく、常にそのセクション自身の
+    内容が実際に終わる位置（find_list_true_end）を使う。次のセクション開始位置を
+    そのまま使うと、間にある「継承元」という見出しテキストまで因子として数えて
+    しまうことがあるため。
     """
     tab, _ = detect_tab_and_list_start(img)
     section_starts = find_avatar_section_starts(img)
@@ -198,14 +206,11 @@ def count_inheritance_factors(img):
     x_start, x_end = int(W * 0.25), int(W * 0.85)
     results = {}
     total = 0
-    for i, (label, s) in enumerate(zip(labels, section_starts)):
+    for label, s in zip(labels, section_starts):
         row_period = estimate_row_period(img[s:min(s + 800, H)], x_start, x_end)
         if row_period is None:
             continue
-        if i < len(section_starts) - 1:
-            e = section_starts[i + 1]
-        else:
-            e = find_list_true_end(img, s, row_period)
+        e = find_list_true_end(img, s, row_period)
         all_boxes = count_boxes_in_range(img, s, e, row_period)
         factor_count = max(0, all_boxes - 3)
         results[label] = factor_count
