@@ -35,7 +35,7 @@ def stitch_images(images, header_ratio=0.33, footer_ratio=0.13, threshold=0.75, 
     final_footer = base_img[base_H - footer_h:, :]
     base_list = base_img[header_h: base_H - footer_h, :]
 
-    template_h = int(base_H * 0.05)
+    template_h = int(base_H * 0.08)
     # base_listの一番下ぎりぎりは、ウィンドウ下端で行が途中で切れている場合があり
     # テンプレートとして不安定になりやすいため、少し上（margin分）にずらして採る
     margin = max(1, int(base_H * 0.015))
@@ -135,6 +135,10 @@ if 'freed_slots' not in st.session_state:
     st.session_state.freed_slots = []
 if 'processed_file_ids' not in st.session_state:
     st.session_state.processed_file_ids = set()
+if 'widget_version' not in st.session_state:
+    # リセット時にこれを増やし、貼り付けボタン／アップローダーのkeyを変えることで
+    # ウィジェット自体が保持している「選択済みの画像」を強制的にクリアする
+    st.session_state.widget_version = 0
 
 
 def add_image(img_bgr):
@@ -150,6 +154,7 @@ def add_image(img_bgr):
 
 # --- 画像の追加方法（PC / スマホで使い分け） ---
 paste_col, upload_col = st.columns(2)
+wv = st.session_state.widget_version
 
 with paste_col:
     st.caption("🖥️ PCの方はこちら（フォルダは開きません）")
@@ -160,7 +165,7 @@ with paste_col:
         text_color="#ffffff",
         background_color="#4285f4",
         hover_background_color="#3367d6",
-        key="paste_button",
+        key=f"paste_button_{wv}",
     )
 
     if paste_result.image_data is not None:
@@ -183,7 +188,7 @@ with upload_col:
         "画像を選択",
         type=["png", "jpg", "jpeg"],
         accept_multiple_files=True,
-        key="mobile_uploader",
+        key=f"mobile_uploader_{wv}",
         label_visibility="collapsed",
     )
 
@@ -228,6 +233,7 @@ if st.session_state.image_list:
             st.session_state.last_pasted_hash = None
             st.session_state.freed_slots = []
             st.session_state.processed_file_ids = set()
+            st.session_state.widget_version += 1  # ウィジェットのkeyを変え、選択状態を強制クリア
             st.rerun()
 
     with col2:
