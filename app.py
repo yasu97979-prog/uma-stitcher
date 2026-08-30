@@ -5,69 +5,66 @@ import numpy as np
 # 画面を広く使う設定
 st.set_page_config(page_title="ウマ娘 因子スクロール結合", layout="wide")
 
-# ==========================================
-# 魔法のCSS：フォルダ選択画面を完全に無効化する
-# ==========================================
+# ========================================================
+# 【超重要】お客様のご要望通り、邪魔なUpload枠を完全に消去する魔法のCSS
+# ========================================================
 st.markdown("""
 <style>
-/* 「Browse files」ボタンを完全に消去 */
-[data-testid="stFileUploadDropzone"] button {
-    display: none !important;
-}
-/* 枠をクリックしてもフォルダ選択画面が開かないようにブロック（クリックを透過させる） */
-[data-testid="stFileUploadDropzone"] {
+/* アップロード枠とUploadボタンを画面から完全に消し去る（機能だけ裏で残す） */
+[data-testid="stFileUploader"] {
+    position: absolute !important;
+    opacity: 0 !important;
+    height: 0 !important;
+    width: 0 !important;
+    z-index: -999 !important;
     pointer-events: none !important;
-    background-color: #f4f8fb !important;
-    border: 3px dashed #4285f4 !important;
-}
-/* 余計な説明テキストを非表示にする */
-[data-testid="stFileUploadDropzone"] small {
-    display: none !important;
 }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🐴 ウマ娘 因子スクロール自動結合ツール")
-st.info("💡 **【超快適版】フォルダ選択画面はもう出ません！**\n画面のどこでも良いので（この文字のあたりなど）一度クリックし、そのまま **Ctrl+V (Cmd+V)** を連打するだけでサクサク画像が追加されます。")
+st.title("🐴 ウマ娘 画像結合ツール")
+st.info("💡 **【完全ペースト専用版】** 邪魔な「Upload」ボタンを完全に消去しました！\nこの画面の**どこでもいいので一度クリック**し、そのまま **Ctrl+V (Cmd+V)** を連打するだけで画像が次々と追加されます。")
 
 if 'image_list' not in st.session_state:
     st.session_state.image_list = []
-if 'uploader_key' not in st.session_state:
-    st.session_state.uploader_key = 0
+if 'processed_file_ids' not in st.session_state:
+    st.session_state.processed_file_ids = set()
 
-# --- 画像ペーストエリア ---
-uploaded_file = st.file_uploader(
-    "👇 画面のどこかをクリックして Ctrl+V でペースト", 
+# --- 見えない画像ペースト受け皿 ---
+# 入力枠をリセットしないことで、2枚目以降のペーストも途切れず受け付ける
+uploaded_files = st.file_uploader(
+    "hidden_uploader", 
     type=["png", "jpg", "jpeg"],
-    accept_multiple_files=False, 
-    key=f"uploader_{st.session_state.uploader_key}"
+    accept_multiple_files=True,
+    label_visibility="hidden"
 )
 
-# 画像がペーストされた瞬間の処理
-if uploaded_file is not None:
-    file_bytes = uploaded_file.read()
-    img_array = np.frombuffer(file_bytes, np.uint8)
-    img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-    if img is not None:
-        st.session_state.image_list.append(img)
+if uploaded_files:
+    new_added = False
+    for f in uploaded_files:
+        if f.file_id not in st.session_state.processed_file_ids:
+            st.session_state.processed_file_ids.add(f.file_id)
+            file_bytes = f.read()
+            img_array = np.frombuffer(file_bytes, np.uint8)
+            img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+            if img is not None:
+                st.session_state.image_list.append(img)
+            new_added = True
     
-    # ペースト枠を瞬時にリセットして、次のペーストに備える
-    st.session_state.uploader_key += 1
-    st.rerun()
+    if new_added:
+        st.rerun()
 
 # --- プレビュー・結合エリア ---
 if st.session_state.image_list:
     st.write("---")
     st.subheader(f"📸 読み込み済みの画像 ({len(st.session_state.image_list)}枚)")
     
-    # 5列に分割して、左から右へ綺麗にサムネイルを並べる
     cols = st.columns(5)
     for idx, img in enumerate(st.session_state.image_list):
         with cols[idx % 5]:
             img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             st.image(img_rgb, caption=f"{idx+1}枚目", use_container_width=True)
-            # 個別削除ボタン
-            if st.button(f"❌ {idx+1}を削除", key=f"del_btn_{idx}_{st.session_state.uploader_key}"):
+            if st.button(f"❌ {idx+1}を削除", key=f"del_btn_{idx}"):
                 st.session_state.image_list.pop(idx)
                 st.rerun()
                 
@@ -77,7 +74,7 @@ if st.session_state.image_list:
     with col1:
         if st.button("🗑️ すべてリセット", type="secondary"):
             st.session_state.image_list = []
-            st.session_state.uploader_key += 1
+            st.session_state.processed_file_ids = set()
             st.rerun()
             
     with col2:
@@ -149,4 +146,4 @@ if st.session_state.image_list:
                             mime="image/png"
                         )
         else:
-            st.info("💡 結合には2枚以上の画像が必要です。上に戻ってスクショを追加してください。")
+            st.info("💡 結合には2枚以上の画像が必要です。Ctrl+Vで画像を追加してください。")
