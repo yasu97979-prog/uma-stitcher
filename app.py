@@ -23,35 +23,40 @@ def detect_header_footer_ratio(img_a, img_b, diff_threshold=15, min_run=6, x_fra
     やり方：中央の帯（x_frac範囲）で1行ごとの画素差分を計算し、
     上から見て差分が続けて大きくなり始める位置＝ヘッダーの終わり、
     下から見て同様の位置＝フッターの始まり、とみなす。
+
+    2枚の画像の縦幅が異なる場合（表示されているリストの行数が違う場合）でも、
+    ヘッダーは「両画像の上端」、フッターは「両画像の下端」をそれぞれ基準に
+    比較することで正しく検出できるようにしている。
     """
-    H = min(img_a.shape[0], img_b.shape[0])
-    W = min(img_a.shape[1], img_b.shape[1])
+    Ha, Wa = img_a.shape[:2]
+    Hb, Wb = img_b.shape[:2]
+    W = min(Wa, Wb)
     x_start, x_end = int(W * x_frac[0]), int(W * x_frac[1])
 
-    a = img_a[:H, x_start:x_end].astype(np.int16)
-    b = img_b[:H, x_start:x_end].astype(np.int16)
-    row_diff = np.mean(np.abs(a - b), axis=(1, 2))
-
-    # ヘッダー：上から見て、差分がmin_run行連続でthreshold超えする直前までを「静止部分」とみなす
+    # ヘッダー：両画像の「上端」を基準に比較する
+    H_top = min(Ha, Hb)
+    a_top = img_a[:H_top, x_start:x_end].astype(np.int16)
+    b_top = img_b[:H_top, x_start:x_end].astype(np.int16)
+    diff_top = np.mean(np.abs(a_top - b_top), axis=(1, 2))
     header_h = 0
-    for y in range(H - min_run):
-        if row_diff[y:y + min_run].mean() > diff_threshold:
+    for y in range(H_top - min_run):
+        if diff_top[y:y + min_run].mean() > diff_threshold:
             header_h = y
             break
-    else:
-        header_h = 0
 
-    # フッター：下から見て同様
+    # フッター：両画像の「下端」を基準に比較する（縦幅が違っても正しく揃う）
+    H_bot = min(Ha, Hb)
+    a_bot = img_a[Ha - H_bot:, x_start:x_end].astype(np.int16)
+    b_bot = img_b[Hb - H_bot:, x_start:x_end].astype(np.int16)
+    diff_bot = np.mean(np.abs(a_bot - b_bot), axis=(1, 2))
     footer_h = 0
-    for y in range(H - 1, min_run, -1):
-        if row_diff[y - min_run:y].mean() > diff_threshold:
-            footer_h = H - y
+    for y in range(H_bot - 1, min_run, -1):
+        if diff_bot[y - min_run:y].mean() > diff_threshold:
+            footer_h = H_bot - y
             break
-    else:
-        footer_h = 0
 
-    header_ratio = header_h / H
-    footer_ratio = footer_h / H
+    header_ratio = header_h / Ha
+    footer_ratio = footer_h / Ha
 
     # 明らかにおかしい結果（検出失敗）の場合はNoneを返し、呼び出し側でデフォルト値にフォールバックさせる
     if header_ratio <= 0 or header_ratio >= 0.7 or footer_ratio >= 0.5 or (header_ratio + footer_ratio) >= 0.85:
