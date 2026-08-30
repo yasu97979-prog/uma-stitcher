@@ -15,6 +15,51 @@ class StitchError(Exception):
         super().__init__(f"{index_a}枚目と{index_b}枚目の間で十分な重なりが検出できませんでした")
 
 
+def detect_header_footer_ratio(img_a, img_b, diff_threshold=15, min_run=6, x_frac=(0.25, 0.85)):
+    """
+    同じウィンドウ・同じキャラをスクロールしただけの2枚（img_a, img_b）を比較し、
+    「毎回まったく同じ絵になっている＝スクロールしない部分（ヘッダー／フッター）」を自動検出する。
+
+    やり方：中央の帯（x_frac範囲）で1行ごとの画素差分を計算し、
+    上から見て差分が続けて大きくなり始める位置＝ヘッダーの終わり、
+    下から見て同様の位置＝フッターの始まり、とみなす。
+    """
+    H = min(img_a.shape[0], img_b.shape[0])
+    W = min(img_a.shape[1], img_b.shape[1])
+    x_start, x_end = int(W * x_frac[0]), int(W * x_frac[1])
+
+    a = img_a[:H, x_start:x_end].astype(np.int16)
+    b = img_b[:H, x_start:x_end].astype(np.int16)
+    row_diff = np.mean(np.abs(a - b), axis=(1, 2))
+
+    # ヘッダー：上から見て、差分がmin_run行連続でthreshold超えする直前までを「静止部分」とみなす
+    header_h = 0
+    for y in range(H - min_run):
+        if row_diff[y:y + min_run].mean() > diff_threshold:
+            header_h = y
+            break
+    else:
+        header_h = 0
+
+    # フッター：下から見て同様
+    footer_h = 0
+    for y in range(H - 1, min_run, -1):
+        if row_diff[y - min_run:y].mean() > diff_threshold:
+            footer_h = H - y
+            break
+    else:
+        footer_h = 0
+
+    header_ratio = header_h / H
+    footer_ratio = footer_h / H
+
+    # 明らかにおかしい結果（検出失敗）の場合はNoneを返し、呼び出し側でデフォルト値にフォールバックさせる
+    if header_ratio <= 0 or header_ratio >= 0.7 or footer_ratio >= 0.5 or (header_ratio + footer_ratio) >= 0.85:
+        return None
+
+    return header_ratio, footer_ratio
+
+
 def stitch_images(images, header_ratio=0.33, footer_ratio=0.13, threshold=0.75, search_ratio=0.85):
     """
     画像リストを縦方向に結合する。
@@ -226,20 +271,22 @@ if st.session_state.image_list:
 
     st.write("---")
 
-    with st.expander("⚙️ 詳細設定（結合がうまくいかない場合に調整）"):
+    with st.expander("⚙️ 詳細設定（自動判定がうまくいかない場合のみ）"):
         st.caption(
-            "自分のキャラは上部にアイコンや「変更」ボタンなどがあり、他人のキャラよりヘッダーが大きくなります。"
-            "また、お使いの端末（画面サイズ）によっても、画像全体に占めるヘッダー・フッターの割合は変わります。"
-            "結合がずれる場合は、まずヘッダー比率を調整してみてください。"
+            "通常はヘッダー・フッターの範囲を1枚目と2枚目の画像から自動で判定します。"
+            "自動判定がうまくいかない場合のみ、下のチェックを入れて手動で比率を指定してください。"
         )
-        header_ratio = st.slider(
-            "ヘッダー比率（上部のアイコン・ステータス欄などが占める割合）",
-            min_value=0.10, max_value=0.60, value=0.33, step=0.01,
-        )
-        footer_ratio = st.slider(
-            "フッター比率（下部の「閉じる」ボタンなどが占める割合）",
-            min_value=0.02, max_value=0.30, value=0.13, step=0.01,
-        )
+        manual_override = st.checkbox("手動でヘッダー・フッター比率を指定する", value=False)
+        manual_header_ratio = manual_footer_ratio = None
+        if manual_override:
+            manual_header_ratio = st.slider(
+                "ヘッダー比率（上部のアイコン・ステータス欄などが占める割合）",
+                min_value=0.10, max_value=0.60, value=0.33, step=0.01,
+            )
+            manual_footer_ratio = st.slider(
+                "フッター比率（下部の「閉じる」ボタンなどが占める割合）",
+                min_value=0.02, max_value=0.30, value=0.13, step=0.01,
+            )
 
     col1, col2 = st.columns([1, 2])
     with col1:
@@ -255,6 +302,21 @@ if st.session_state.image_list:
         if len(st.session_state.image_list) >= 2:
             if st.button("✨ 結合スタート！", type="primary"):
                 with st.spinner("画像を結合しています... 少々お待ちください。"):
+                    if manual_override:
+                        header_ratio, footer_ratio = manual_header_ratio, manual_footer_ratio
+                    else:
+                        detected = detect_header_footer_ratio(
+                            st.session_state.image_list[0], st.session_state.image_list[1]
+                        )
+                        if detected is None:
+                            st.warning(
+                                "⚠️ ヘッダー・フッターの自動判定に失敗したため、デフォルト値（33% / 13%）を使用します。"
+                                "うまく結合できない場合は「詳細設定」から手動で指定してください。"
+                            )
+                            header_ratio, footer_ratio = 0.33, 0.13
+                        else:
+                            header_ratio, footer_ratio = detected
+
                     try:
                         final_img = stitch_images(
                             st.session_state.image_list,
