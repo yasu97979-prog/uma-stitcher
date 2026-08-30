@@ -1,0 +1,137 @@
+import IPython
+from google.colab import output
+import base64
+import os
+import shutil
+
+# 画像保存用フォルダの準備（リセット）
+image_dir = '/content/uma_images'
+if os.path.exists(image_dir):
+    shutil.rmtree(image_dir)
+os.makedirs(image_dir, exist_ok=True)
+
+# 画像IDカウンター（削除しても重複しないように管理）
+global image_id_counter
+image_id_counter = 0
+
+def receive_image(b64_string):
+    global image_id_counter
+    image_id_counter += 1
+    
+    header, encoded = b64_string.split(",", 1)
+    data = base64.b64decode(encoded)
+    
+    filename = f"{image_dir}/{image_id_counter}.png"
+    with open(filename, "wb") as f:
+        f.write(data)
+    
+    # 現在保存されているファイル数を数えて返す
+    count = len(os.listdir(image_dir))
+    return f"{image_id_counter},{count}"
+
+def delete_image(image_id):
+    filename = f"{image_dir}/{image_id}.png"
+    if os.path.exists(filename):
+        os.remove(filename)
+    count = len(os.listdir(image_dir))
+    return str(count)
+
+output.register_callback('notebook.receive_image', receive_image)
+output.register_callback('notebook.delete_image', delete_image)
+
+html_code = """
+<div id="paste-box" style="width: 100%; height: 120px; border: 4px dashed #4285F4; background: #F8F9FA; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 18px; font-weight: bold; color: #5F6368; cursor: pointer; transition: 0.3s;" tabindex="0">
+    枠内をクリックし、ここにスクショをペースト（Ctrl+V / Cmd+V）してください
+</div>
+<div id="status" style="margin-top: 15px; font-weight: bold; color: #0F9D58;">準備完了：画像をペーストしてください</div>
+<div id="preview" style="display: flex; flex-wrap: wrap; gap: 15px; margin-top: 15px;"></div>
+
+<script>
+    const pasteBox = document.getElementById('paste-box');
+    const statusDiv = document.getElementById('status');
+    const previewDiv = document.getElementById('preview');
+
+    pasteBox.addEventListener('focus', () => { pasteBox.style.background = '#E8F0FE'; });
+    pasteBox.addEventListener('blur', () => { pasteBox.style.background = '#F8F9FA'; });
+
+    pasteBox.addEventListener('paste', async (e) => {
+        e.preventDefault();
+        const items = (e.clipboardData || e.originalEvent.clipboardData).items;
+        
+        let foundImage = false;
+        for (let index in items) {
+            const item = items[index];
+            if (item.kind === 'file' && item.type.startsWith('image/')) {
+                foundImage = true;
+                const blob = item.getAsFile();
+                const reader = new FileReader();
+                reader.onload = async (event) => {
+                    const b64 = event.target.result;
+                    statusDiv.innerText = "画像をColabに送信中...";
+                    statusDiv.style.color = "#4285F4";
+                    
+                    try {
+                        const result = await google.colab.kernel.invokeFunction('notebook.receive_image', [b64], {});
+                        const resText = result.data['text/plain'].replace(/['"]+/g, '');
+                        const [imgId, count] = resText.split(',');
+                        
+                        statusDiv.innerText = "【成功】現在 " + count + " 枚の画像が貼り付けられています";
+                        statusDiv.style.color = "#0F9D58";
+
+                        // プレビューコンテナ
+                        const container = document.createElement('div');
+                        container.style.position = 'relative';
+                        container.style.display = 'inline-block';
+                        
+                        // 画像要素
+                        const img = document.createElement('img');
+                        img.src = b64;
+                        img.style.height = '150px';
+                        img.style.border = '2px solid #ccc';
+                        img.style.borderRadius = '5px';
+                        container.appendChild(img);
+
+                        // 削除ボタン (×)
+                        const delBtn = document.createElement('button');
+                        delBtn.innerText = '×';
+                        delBtn.style.position = 'absolute';
+                        delBtn.style.top = '-10px';
+                        delBtn.style.right = '-10px';
+                        delBtn.style.background = '#DB4437';
+                        delBtn.style.color = 'white';
+                        delBtn.style.border = 'none';
+                        delBtn.style.borderRadius = '50%';
+                        delBtn.style.width = '24px';
+                        delBtn.style.height = '24px';
+                        delBtn.style.cursor = 'pointer';
+                        delBtn.style.fontWeight = 'bold';
+                        delBtn.style.boxShadow = '0 2px 4px rgba(0,0,0,0.2)';
+                        
+                        delBtn.onclick = async () => {
+                            container.remove();
+                            statusDiv.innerText = "画像を削除中...";
+                            statusDiv.style.color = "#F4B400";
+                            const delResult = await google.colab.kernel.invokeFunction('notebook.delete_image', [imgId], {});
+                            const newCount = delResult.data['text/plain'].replace(/['"]+/g, '');
+                            statusDiv.innerText = "画像を削除しました（現在 " + newCount + " 枚）";
+                            statusDiv.style.color = "#0F9D58";
+                        };
+                        
+                        container.appendChild(delBtn);
+                        previewDiv.appendChild(container);
+                    } catch (err) {
+                        statusDiv.innerText = "通信エラーが発生しました。もう一度貼り付けてください。";
+                        statusDiv.style.color = "#DB4437";
+                    }
+                };
+                reader.readAsDataURL(blob);
+            }
+        }
+        if (!foundImage) {
+            statusDiv.innerText = "※画像がクリップボードに見つかりません。スクショをコピーし直してください。";
+            statusDiv.style.color = "#DB4437";
+        }
+    });
+</script>
+"""
+display(IPython.display.HTML(html_code))
