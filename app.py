@@ -60,6 +60,28 @@ def detect_header_footer_ratio(img_a, img_b, diff_threshold=15, min_run=6, x_fra
     return header_ratio, footer_ratio
 
 
+def estimate_row_period(img_list, x_start, x_end, min_period=15, max_period=150):
+    """
+    因子・スキルの各行が繰り返される「周期（1行の高さ）」を自己相関から推定する。
+    テンプレートのサイズをこれより小さくすることで、重なりがわずか1〜2行しか
+    無い場合でも、テンプレートが行の境界をまたいで不安定になるのを防ぐ。
+    """
+    gray = cv2.cvtColor(img_list[:, x_start:x_end], cv2.COLOR_BGR2GRAY).astype(np.float64)
+    signal = gray.mean(axis=1)
+    signal = signal - signal.mean()
+    n = len(signal)
+    autocorr = np.correlate(signal, signal, mode='full')[n - 1:]
+    autocorr /= (autocorr[0] + 1e-9)
+
+    best_p, best_v = None, -1.0
+    upper = min(max_period, n - 1)
+    for p in range(min_period, upper):
+        if autocorr[p] > autocorr[p - 1] and autocorr[p] > autocorr[p + 1] and autocorr[p] > best_v:
+            best_v = autocorr[p]
+            best_p = p
+    return best_p
+
+
 def stitch_images(images, header_ratio=0.33, footer_ratio=0.13, threshold=0.75, search_ratio=0.85):
     """
     画像リストを縦方向に結合する。
@@ -80,12 +102,17 @@ def stitch_images(images, header_ratio=0.33, footer_ratio=0.13, threshold=0.75, 
     final_footer = base_img[base_H - footer_h:, :]
     base_list = base_img[header_h: base_H - footer_h, :]
 
-    template_h = int(base_H * 0.08)
-    # base_listの一番下ぎりぎりは、ウィンドウ下端で行が途中で切れている場合があり
-    # テンプレートとして不安定になりやすいため、少し上（margin分）にずらして採る
-    margin = max(1, int(base_H * 0.015))
     x_start = int(base_W * 0.25)
     x_end = int(base_W * 0.85)
+
+    # 行の高さ（周期）を検出し、テンプレートは「1行より少し小さいサイズ」にする。
+    # これにより、重なりが1〜2行しか無いケースでもテンプレートが行の境界を
+    # またいで不安定になることを防ぎ、マッチ精度が大幅に上がる。
+    row_period = estimate_row_period(base_list, x_start, x_end)
+    if row_period is None:
+        row_period = max(20, int(base_H * 0.05))
+    template_h = max(10, int(row_period * 0.7))
+    margin = max(1, int(row_period * 0.1))
 
     for i in range(1, len(images)):
         img_next = images[i]
@@ -119,6 +146,9 @@ def stitch_images(images, header_ratio=0.33, footer_ratio=0.13, threshold=0.75, 
         # 実際の継ぎ目位置はそこにmarginを足した位置になる
         new_part = next_list[match_y + template_h + margin:, :]
         base_list = np.vstack((base_list, new_part))
+
+        # 次のループのテンプレートサイズ計算のため、周期は毎回使い回してよい
+        # （同じ画面のスクロールなので行の高さは変わらない）
 
     return np.vstack((final_header, base_list, final_footer))
 
