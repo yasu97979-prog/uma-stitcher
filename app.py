@@ -160,26 +160,35 @@ def stitch_images(images, manual_ratio=None, threshold=0.75, search_ratio=0.85):
             # i番目（0-indexed）は表示上「i+1枚目」なので、直前の画像は「i枚目」
             raise StitchError(index_a=i, index_b=i + 1)
 
-        # マッチ位置はbase_list末尾からmargin分手前を指しているので、
-        # 実際の継ぎ目位置はそこにmarginを足した位置になる
-        cut_point = match_y + template_h + margin
+        # 継ぎ目の位置は「行の高さの固定計算」ではなく、マッチ位置より少し先から
+        # 実際に行間の空白（単色帯）を探して決める。一番下の行がウィンドウ端で
+        # 通常より低い高さしか見えていない等のケースでも、行の境界を正確に検出できる。
+        gray_next = cv2.cvtColor(next_list[:, x_start:x_end], cv2.COLOR_BGR2GRAY)
+        search_start = match_y + max(3, int(template_h * 0.3))
+        max_scan = match_y + row_period + template_h
+        gap_start = None
+        y = search_start
+        while y < min(next_list.shape[0], max_scan):
+            if gray_next[y].std() < 3:
+                gap_start = y
+                break
+            y += 1
+        # 空白が見つからなければ、従来通りの固定計算にフォールバックする
+        cut_point = gap_start if gap_start is not None else match_y + template_h + margin
 
-        # base_listの一番下ぎりぎりには、リストの表示が途切れるウィンドウ下端の
-        # うっすらとした縁・フェードが入っていることがあり、そのまま使うと継ぎ目に
-        # 細い線として残ってしまう。この縁の幅は画像によって変わる（数px〜十数px）ため、
-        # 固定量ではなく「末尾から続く単色帯」の長さを都度検出してまるごと取り除く。
-        # 次の画像側には同じ位置に縁が写っていないため、その分だけ次の画像側から使う。
-        edge_len = 0
-        gray_tail = cv2.cvtColor(base_list[:, x_start:x_end], cv2.COLOR_BGR2GRAY)
-        for y in range(base_list.shape[0] - 1, max(-1, base_list.shape[0] - row_period - 1), -1):
-            if gray_tail[y].std() < 3:
-                edge_len += 1
+        # base_listの末尾にある単色の帯（通常の行間ギャップ、またはウィンドウ下端の
+        # うっすらとした縁・フェード）は、長さに関わらずまるごと取り除き、
+        # next_list側の綺麗なギャップ（cut_point直前）に置き換える。
+        gray_base = cv2.cvtColor(base_list[:, x_start:x_end], cv2.COLOR_BGR2GRAY)
+        trailing_blank = 0
+        for yy in range(base_list.shape[0] - 1, max(-1, base_list.shape[0] - row_period - 1), -1):
+            if gray_base[yy].std() < 3:
+                trailing_blank += 1
             else:
                 break
-        trim = max(margin, edge_len)
+        base_list = base_list[:-trailing_blank] if trailing_blank > 0 else base_list
 
-        base_list = base_list[:-trim] if trim > 0 else base_list
-        new_part = next_list[max(0, cut_point - trim):, :]
+        new_part = next_list[cut_point:, :]
         base_list = np.vstack((base_list, new_part))
 
     return np.vstack((final_header, base_list, final_footer))
