@@ -226,6 +226,21 @@ if st.session_state.image_list:
 
     st.write("---")
 
+    with st.expander("⚙️ 詳細設定（結合がうまくいかない場合に調整）"):
+        st.caption(
+            "自分のキャラは上部にアイコンや「変更」ボタンなどがあり、他人のキャラよりヘッダーが大きくなります。"
+            "また、お使いの端末（画面サイズ）によっても、画像全体に占めるヘッダー・フッターの割合は変わります。"
+            "結合がずれる場合は、まずヘッダー比率を調整してみてください。"
+        )
+        header_ratio = st.slider(
+            "ヘッダー比率（上部のアイコン・ステータス欄などが占める割合）",
+            min_value=0.10, max_value=0.60, value=0.33, step=0.01,
+        )
+        footer_ratio = st.slider(
+            "フッター比率（下部の「閉じる」ボタンなどが占める割合）",
+            min_value=0.02, max_value=0.30, value=0.13, step=0.01,
+        )
+
     col1, col2 = st.columns([1, 2])
     with col1:
         if st.button("🗑️ すべてリセット", type="secondary"):
@@ -241,7 +256,11 @@ if st.session_state.image_list:
             if st.button("✨ 結合スタート！", type="primary"):
                 with st.spinner("画像を結合しています... 少々お待ちください。"):
                     try:
-                        final_img = stitch_images(st.session_state.image_list)
+                        final_img = stitch_images(
+                            st.session_state.image_list,
+                            header_ratio=header_ratio,
+                            footer_ratio=footer_ratio,
+                        )
                     except StitchError as e:
                         st.error(
                             f"❌ 結合に失敗しました。{e.index_a}枚目と{e.index_b}枚目の"
