@@ -70,10 +70,14 @@ def detect_tab_and_list_start(img, green=(8, 220, 158), tol=40):
     return None, None
 
 
-def find_avatar_section_starts(img, x_range=(40, 85), bg_thresh=225, frac_thresh=0.6, min_run=40, min_gap=200):
+def find_avatar_section_starts(img, x_range=(40, 85), bg_thresh=225, frac_thresh=0.5,
+                                min_run=30, min_gap=200, gap_tol=8):
     """
     継承タブで、親・祖父母のアバターサムネイルが表示されている位置（＝各因子セクションの
     開始位置）を検出する。画面一番上のアバターは除外し、それ以降に現れるものだけを返す。
+
+    キャラクターの髪・服の色によっては、アバター領域の判定が数px単位で途切れることがあるため、
+    gap_tol分までの短い途切れは同じアバターとして許容し、判定漏れを防ぐ。
     """
     H = img.shape[0]
     band = img[:, x_range[0]:x_range[1]].astype(int)
@@ -85,9 +89,17 @@ def find_avatar_section_starts(img, x_range=(40, 85), bg_thresh=225, frac_thresh
     while y < H:
         if is_avatar_row[y]:
             run_start = y
-            while y < H and is_avatar_row[y]:
-                y += 1
-            if y - run_start >= min_run:
+            last_true = y
+            y += 1
+            while y < H:
+                if is_avatar_row[y]:
+                    last_true = y
+                    y += 1
+                elif y - last_true <= gap_tol:
+                    y += 1
+                else:
+                    break
+            if last_true - run_start >= min_run:
                 if not starts or run_start - starts[-1] >= min_gap:
                     starts.append(run_start)
         else:
@@ -95,15 +107,52 @@ def find_avatar_section_starts(img, x_range=(40, 85), bg_thresh=225, frac_thresh
     return starts[1:] if len(starts) > 1 else []
 
 
-def count_boxes_in_range(img, y_start, y_end, row_period, x_pairs=((0.03, 0.48), (0.52, 0.97)),
+def find_list_true_end(img, list_start, row_period, x_frac=(0.03, 0.94), bg_thresh=240, density_thresh=0.05):
+    """
+    リスト本体が実際に終わる位置（「閉じる」ボタン手前など）を探す。
+    行と行の間の小さな隙間は行の高さ（row_period）よりずっと短いのに対し、
+    リストが終わった後は「内容の無い行」がまとまって続くことを利用して区別する。
+    単純な均一性（分散）だけで判定すると、通常の行間ギャップの長さが画像ごとにばらつき
+    誤判定しやすいため、行の高さに対する相対的な長さ（row_period基準）で判定する。
+    """
+    H, W = img.shape[:2]
+    x0, x1 = int(W * x_frac[0]), int(W * x_frac[1])
+    band = img[:, x0:x1].astype(int)
+    is_bg = (band[:, :, 0] > bg_thresh) & (band[:, :, 1] > bg_thresh) & (band[:, :, 2] > bg_thresh)
+    non_bg_density = 1 - is_bg.mean(axis=1)
+    min_blank_run = max(6, int(row_period * 0.35))
+    y = list_start + int(row_period * 0.5)  # 最低半行分は必ず内容があるはずなので、そこから探索開始
+    while y < H:
+        if non_bg_density[y] < density_thresh:
+            run_start = y
+            while y < H and non_bg_density[y] < density_thresh:
+                y += 1
+            if y - run_start >= min_blank_run:
+                return run_start
+        else:
+            y += 1
+    return H
+
+
+def count_boxes_in_range(img, y_start, y_end, row_period, x_pairs=((0.03, 0.48), (0.52, 0.94)),
                           bg_thresh=240, std_thresh=5):
-    """指定した縦範囲内で、行の周期ごとに左右のセルに「箱（因子/スキル）」があるかを判定して数える"""
+    """
+    指定した縦範囲内で、行の周期ごとに左右のセルに「箱（因子/スキル）」があるかを判定して数える。
+
+    右端ギリギリ（0.94超）にはスクロールバーの細い線が写り込むことがあり、これを内容と
+    誤認識しないよう右セルの範囲を少し内側に絞っている。また、行数で単純に整数の周期を
+    掛け算すると、割り切れない端数が行を重ねるごとに蓄積して最後の方の行位置がずれるため、
+    範囲全体を実際の行数で割った「正確な周期」を使って各行の位置を計算し直している。
+    """
     W = img.shape[1]
-    count = 0
     n_rows = max(0, int(round((y_end - y_start) / row_period)))
+    if n_rows == 0:
+        return 0
+    precise_period = (y_end - y_start) / n_rows
+    count = 0
     for r in range(n_rows):
-        ry0 = y_start + int(r * row_period) + 4
-        ry1 = y_start + int((r + 1) * row_period) - 4
+        ry0 = y_start + int(round(r * precise_period)) + 4
+        ry1 = y_start + int(round((r + 1) * precise_period)) - 4
         if ry1 <= ry0 or ry1 > y_end:
             continue
         for xs, xe in x_pairs:
@@ -125,10 +174,11 @@ def count_skill_total(img):
     if list_start is None:
         return None
     H, W = img.shape[:2]
-    row_period = estimate_row_period(img[list_start:], int(W * 0.03), int(W * 0.95))
+    row_period = estimate_row_period(img[list_start:min(list_start + 1500, H)], int(W * 0.03), int(W * 0.95))
     if row_period is None:
         return None
-    total = count_boxes_in_range(img, list_start, H, row_period)
+    list_end = find_list_true_end(img, list_start, row_period)
+    total = count_boxes_in_range(img, list_start, list_end, row_period)
     return {"スキル合計": total}
 
 
@@ -136,21 +186,26 @@ def count_inheritance_factors(img):
     """
     継承タブ：親・祖父母1・祖父母2ごとの因子数と合計を数える。
     各セクションの先頭3つ（青・ピンク・黄緑のカテゴリタグ）は因子として数えない。
+    セクションの終わりは、最後（祖父母2）以外は次のセクションの開始位置、
+    最後だけはリストの実際の終端（find_list_true_end）を使う。
     """
     tab, _ = detect_tab_and_list_start(img)
     section_starts = find_avatar_section_starts(img)
     if not section_starts:
         return None
     H, W = img.shape[:2]
-    section_ends = section_starts[1:] + [H]
     labels = ["親の因子", "祖父母1の因子", "祖父母2の因子"]
     x_start, x_end = int(W * 0.25), int(W * 0.85)
     results = {}
     total = 0
-    for label, s, e in zip(labels, section_starts, section_ends):
-        row_period = estimate_row_period(img[s:e], x_start, x_end)
+    for i, (label, s) in enumerate(zip(labels, section_starts)):
+        row_period = estimate_row_period(img[s:min(s + 800, H)], x_start, x_end)
         if row_period is None:
             continue
+        if i < len(section_starts) - 1:
+            e = section_starts[i + 1]
+        else:
+            e = find_list_true_end(img, s, row_period)
         all_boxes = count_boxes_in_range(img, s, e, row_period)
         factor_count = max(0, all_boxes - 3)
         results[label] = factor_count
