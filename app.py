@@ -5,34 +5,43 @@ import numpy as np
 # 画面を広く使う設定
 st.set_page_config(page_title="ウマ娘 因子スクロール結合", layout="wide")
 
-st.title("🐴 ウマ娘 画像結合ツール")
-st.write("枠内をクリックして **Ctrl+V (Cmd+V)** を押してください。（2枚目を貼る時は、もう一度枠をクリックしてCtrl+Vを押します）")
+st.title("🐴 ウマ娘 因子スクロール自動結合ツール")
+st.info("💡 **連続ペーストのコツ:** \n灰色の枠の中をクリックするとファイル選択画面が開いてしまいます。**画面の何もない白い余白（タイトルのあたりなど）**を一度クリックしてから、**Ctrl+V (Cmd+V)** を連打すると、画面を開かずにスムーズに連続追加できます！")
 
 if 'image_list' not in st.session_state:
     st.session_state.image_list = []
+if 'processed_file_ids' not in st.session_state:
+    st.session_state.processed_file_ids = set()
 if 'uploader_key' not in st.session_state:
     st.session_state.uploader_key = 0
 
 # --- 画像ペーストエリア ---
-# 1枚ペーストされるたびに key を変えて、入力枠を強制的に新品（空）にリセットする
-uploaded_file = st.file_uploader(
-    "ここをクリックして Ctrl+V でスクショをペースト", 
+# 複数ファイル受付モードにし、枠を毎回リセットしないようにする
+uploaded_files = st.file_uploader(
+    "スクショをペースト (Ctrl+V) またはファイルを選択", 
     type=["png", "jpg", "jpeg"],
-    accept_multiple_files=False, 
+    accept_multiple_files=True, 
     key=f"uploader_{st.session_state.uploader_key}"
 )
 
 # 画像がペーストされた瞬間の処理
-if uploaded_file is not None:
-    file_bytes = uploaded_file.read()
-    img_array = np.frombuffer(file_bytes, np.uint8)
-    img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-    if img is not None:
-        st.session_state.image_list.append(img)
-    
-    # 枠をリセットして画面を更新
-    st.session_state.uploader_key += 1
-    st.rerun()
+if uploaded_files:
+    new_added = False
+    for f in uploaded_files:
+        # まだ処理していない新しい画像だけを読み込む
+        if f.file_id not in st.session_state.processed_file_ids:
+            file_bytes = f.read()
+            img_array = np.frombuffer(file_bytes, np.uint8)
+            img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+            if img is not None:
+                st.session_state.image_list.append(img)
+            
+            st.session_state.processed_file_ids.add(f.file_id)
+            new_added = True
+            
+    # 新しい画像が追加された時だけ画面を更新
+    if new_added:
+        st.rerun()
 
 # --- プレビュー・結合エリア ---
 if st.session_state.image_list:
@@ -56,6 +65,7 @@ if st.session_state.image_list:
     with col1:
         if st.button("🗑️ すべてリセット", type="secondary"):
             st.session_state.image_list = []
+            st.session_state.processed_file_ids = set()
             st.session_state.uploader_key += 1
             st.rerun()
             
