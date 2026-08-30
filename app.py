@@ -6,25 +6,36 @@ import numpy as np
 st.set_page_config(page_title="ウマ娘 因子スクロール結合", layout="wide")
 
 # ========================================================
-# 【最重要事項】ダイアログを絶対に開かせず、Uploadボタンを消すCSS
+# 【最重要】ダイアログを完全に封印し、ペースト機能は活かすCSS
+# ※画面外へ吹き飛ばす処理は絶対にしていません。元の位置のままです。
 # ========================================================
 st.markdown("""
 <style>
-/* 1. アップロード枠の中身（ボタン・アイコン・文字）を全て消去 */
-[data-testid="stFileUploadDropzone"] * {
-    display: none !important;
-}
-/* 2. アップロード枠自体をクリック不可にする（これでダイアログは絶対に開きません） */
+/* 1. アップロード枠のクリックを無効化（ダイアログ絶対起動させない） */
 [data-testid="stFileUploadDropzone"] {
     pointer-events: none !important;
-    border: none !important;
-    background: transparent !important;
-    padding: 0 !important;
-    min-height: 0 !important;
+    background-color: #f4f8fb !important;
+    border: 3px dashed #4285f4 !important;
+    border-radius: 10px !important;
+    padding: 40px 20px !important;
 }
-/* 3. 画像を貼った後に出るファイル名リストを非表示にする */
-[data-testid="stFileUploader"] section,
-[data-testid="stFileUploader"] ul {
+/* 2. 邪魔なUploadボタンと標準の説明文を消去 */
+[data-testid="stFileUploadDropzone"] button,
+[data-testid="stFileUploadDropzone"] small,
+[data-testid="stFileUploadDropzone"] div[data-testid="stMarkdownContainer"] {
+    display: none !important;
+}
+/* 3. 代わりに青い枠内に独自の案内テキストを表示する */
+[data-testid="stFileUploadDropzone"]::after {
+    content: "🖱️ 画面をクリックしてから 【 Ctrl + V 】 を押してください！ (ダイアログは開きません。そのまま2枚目以降も貼れます)";
+    display: block !important;
+    text-align: center !important;
+    color: #4285f4 !important;
+    font-size: 18px !important;
+    font-weight: bold !important;
+}
+/* 4. 画像を貼った後のファイル名リストを非表示 */
+[data-testid="stFileUploader"] section {
     display: none !important;
 }
 </style>
@@ -32,35 +43,18 @@ st.markdown("""
 
 st.title("🐴 ウマ娘 因子スクロール自動結合ツール")
 
-# ========================================================
-# ユーザーがクリックするための「安全な的（まと）」
-# ※ただのデザイン枠なので、クリックしても絶対に何も開きません
-# ========================================================
-st.markdown("""
-<div style="background-color: #f4f8fb; border: 3px dashed #4285f4; border-radius: 10px; padding: 40px; text-align: center; cursor: pointer; outline: none;" tabindex="0">
-    <h2 style="color: #4285f4; margin: 0;">🖱️ この青い枠の中をクリックしてから 【 Ctrl + V 】</h2>
-    <p style="color: #555; font-size: 16px; margin-top: 10px;">
-        ※この枠はただのデザインなので、<b>フォルダ選択画面は絶対に開きません。</b><br>
-        ※枠をクリックした状態のまま、Ctrl+Vを連打すれば何枚でもサクサク追加できます。
-    </p>
-</div>
-""", unsafe_allow_html=True)
-
-# データの保持
+# データの保持（余計なリセットキーは完全撤廃しました）
 if 'image_list' not in st.session_state:
     st.session_state.image_list = []
 if 'processed_file_ids' not in st.session_state:
     st.session_state.processed_file_ids = set()
-if 'uploader_key' not in st.session_state:
-    st.session_state.uploader_key = 0
 
-# --- 本物の画像ペーストエリア（透明・クリック無効化済み） ---
-# ※枠をリセットしないため、Ctrl+Vの連打が途切れません
+# --- 画像ペーストエリア ---
+# ※キーを固定にしたため、2枚目以降のペーストが途切れることは絶対にありません
 uploaded_files = st.file_uploader(
-    "hidden_uploader", 
+    "hidden_label", 
     type=["png", "jpg", "jpeg"],
     accept_multiple_files=True,
-    key=f"uploader_{st.session_state.uploader_key}",
     label_visibility="hidden"
 )
 
@@ -68,7 +62,7 @@ uploaded_files = st.file_uploader(
 if uploaded_files:
     new_added = False
     for f in uploaded_files:
-        # まだ読み込んでいない新しい画像だけを処理する
+        # 新しくペーストされた画像だけを順次リストに追加する
         if f.file_id not in st.session_state.processed_file_ids:
             st.session_state.processed_file_ids.add(f.file_id)
             file_bytes = f.read()
@@ -78,7 +72,7 @@ if uploaded_files:
                 st.session_state.image_list.append(img)
             new_added = True
             
-    # 新しい画像がペーストされた時だけ画面を更新
+    # 新しい画像が追加された時だけ画面を更新
     if new_added:
         st.rerun()
 
@@ -94,7 +88,7 @@ if st.session_state.image_list:
             img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             st.image(img_rgb, caption=f"{idx+1}枚目", use_container_width=True)
             # 個別削除ボタン
-            if st.button(f"❌ {idx+1}を削除", key=f"del_btn_{idx}_{st.session_state.uploader_key}"):
+            if st.button(f"❌ {idx+1}を削除", key=f"del_btn_{idx}"):
                 st.session_state.image_list.pop(idx)
                 st.rerun()
                 
@@ -102,11 +96,9 @@ if st.session_state.image_list:
     
     col1, col2 = st.columns([1, 2])
     with col1:
-        # リセット時のみ安全に枠を新品に戻す
         if st.button("🗑️ すべてリセット", type="secondary"):
             st.session_state.image_list = []
             st.session_state.processed_file_ids = set()
-            st.session_state.uploader_key += 1
             st.rerun()
             
     with col2:
@@ -178,4 +170,4 @@ if st.session_state.image_list:
                             mime="image/png"
                         )
         else:
-            st.info("💡 結合には2枚以上の画像が必要です。青い枠内をクリックしてからCtrl+Vで画像を追加してください。")
+            st.info("💡 結合には2枚以上の画像が必要です。Ctrl+Vで画像を追加してください。")
