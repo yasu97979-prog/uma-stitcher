@@ -6,36 +6,20 @@ import numpy as np
 st.set_page_config(page_title="ウマ娘 因子スクロール結合", layout="wide")
 
 # ========================================================
-# 【最重要】ダイアログを完全に封印し、ペースト機能は活かすCSS
-# ※画面外へ吹き飛ばす処理は絶対にしていません。元の位置のままです。
+# 【最重要】画面外に飛ばさず、ダイアログとUploadボタンだけを封じる
 # ========================================================
 st.markdown("""
 <style>
-/* 1. アップロード枠のクリックを無効化（ダイアログ絶対起動させない） */
+/* 1. アップロード枠のクリックを無効化（ダイアログが絶対に開かなくなる） */
 [data-testid="stFileUploadDropzone"] {
     pointer-events: none !important;
-    background-color: #f4f8fb !important;
-    border: 3px dashed #4285f4 !important;
-    border-radius: 10px !important;
-    padding: 40px 20px !important;
 }
-/* 2. 邪魔なUploadボタンと標準の説明文を消去 */
-[data-testid="stFileUploadDropzone"] button,
-[data-testid="stFileUploadDropzone"] small,
-[data-testid="stFileUploadDropzone"] div[data-testid="stMarkdownContainer"] {
+/* 2. 邪魔な「Upload (Browse files)」ボタンを消去 */
+[data-testid="stFileUploadDropzone"] button {
     display: none !important;
 }
-/* 3. 代わりに青い枠内に独自の案内テキストを表示する */
-[data-testid="stFileUploadDropzone"]::after {
-    content: "🖱️ 画面をクリックしてから 【 Ctrl + V 】 を押してください！ (ダイアログは開きません。そのまま2枚目以降も貼れます)";
-    display: block !important;
-    text-align: center !important;
-    color: #4285f4 !important;
-    font-size: 18px !important;
-    font-weight: bold !important;
-}
-/* 4. 画像を貼った後のファイル名リストを非表示 */
-[data-testid="stFileUploader"] section {
+/* 3. 貼り付けたあとに表示されるファイル名リストを非表示 */
+[data-testid="stUploadedFile"] {
     display: none !important;
 }
 </style>
@@ -43,26 +27,32 @@ st.markdown("""
 
 st.title("🐴 ウマ娘 因子スクロール自動結合ツール")
 
-# データの保持（余計なリセットキーは完全撤廃しました）
+# ユーザーにクリックしてもらうための安全な案内板
+st.info("🖱️ **この案内文のあたり（画面のどこでもOK）を一度クリックしてから、そのまま【 Ctrl + V 】を連打してください。**\n\n※ダイアログは絶対に開きません。※そのまま2枚目以降もサクサク追加されます。")
+
+# データの保持
 if 'image_list' not in st.session_state:
     st.session_state.image_list = []
 if 'processed_file_ids' not in st.session_state:
     st.session_state.processed_file_ids = set()
+# リセットボタンを押した時"だけ"枠を新しくするためのキー
+if 'uploader_key' not in st.session_state:
+    st.session_state.uploader_key = 0
 
 # --- 画像ペーストエリア ---
-# ※キーを固定にしたため、2枚目以降のペーストが途切れることは絶対にありません
+# ※画像を貼るたびにキーを変えない（リセットしない）ことで、Ctrl+Vの連打が可能になります
 uploaded_files = st.file_uploader(
-    "hidden_label", 
+    "【ペースト専用枠】クリックしてもフォルダ画面は開きません", 
     type=["png", "jpg", "jpeg"],
     accept_multiple_files=True,
-    label_visibility="hidden"
+    key=f"uploader_{st.session_state.uploader_key}"
 )
 
 # ペーストされた画像の処理
 if uploaded_files:
     new_added = False
     for f in uploaded_files:
-        # 新しくペーストされた画像だけを順次リストに追加する
+        # まだ読み込んでいない新しい画像だけを処理する
         if f.file_id not in st.session_state.processed_file_ids:
             st.session_state.processed_file_ids.add(f.file_id)
             file_bytes = f.read()
@@ -88,7 +78,7 @@ if st.session_state.image_list:
             img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             st.image(img_rgb, caption=f"{idx+1}枚目", use_container_width=True)
             # 個別削除ボタン
-            if st.button(f"❌ {idx+1}を削除", key=f"del_btn_{idx}"):
+            if st.button(f"❌ {idx+1}を削除", key=f"del_btn_{idx}_{st.session_state.uploader_key}"):
                 st.session_state.image_list.pop(idx)
                 st.rerun()
                 
@@ -96,9 +86,11 @@ if st.session_state.image_list:
     
     col1, col2 = st.columns([1, 2])
     with col1:
+        # 「すべてリセット」を押した時のみ、安全に枠を新品に戻す
         if st.button("🗑️ すべてリセット", type="secondary"):
             st.session_state.image_list = []
             st.session_state.processed_file_ids = set()
+            st.session_state.uploader_key += 1
             st.rerun()
             
     with col2:
