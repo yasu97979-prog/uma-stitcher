@@ -1,105 +1,98 @@
+import streamlit as st
 import cv2
 import numpy as np
-import glob
 import re
-import IPython
-from IPython.display import display, HTML
-import base64
 
-image_dir = '/content/uma_images'
+st.set_page_config(page_title="ウマ娘 因子スクロール結合", layout="centered")
+
+st.title("🐴 ウマ娘 因子スクロール自動結合ツール")
+st.write("複数枚のスクショをアップロードするだけで、自動で1枚の縦長画像に結合します！")
 
 def natural_keys(text):
     return [int(c) if c.isdigit() else c for c in re.split(r'(\d+)', text)]
 
-image_paths = sorted(glob.glob(f"{image_dir}/*.png"), key=natural_keys)
+uploaded_files = st.file_uploader(
+    "スクショをすべて選択してアップロードしてください", 
+    type=["png", "jpg", "jpeg"], 
+    accept_multiple_files=True
+)
 
-if len(image_paths) < 2:
-    print("画像が2枚以上ありません。上のステップで画像をペーストしてください。")
-else:
-    print(f"ペーストされた {len(image_paths)} 枚の画像を結合処理中...\n")
-
-    # 1. 基準となる1枚目の画像を読み込む
-    base_img = cv2.imread(image_paths[0])
-    base_H, base_W = base_img.shape[:2]
-
-    # ========================================================
-    # 【最重要修正】固定UIのカット範囲とテンプレートサイズ
-    # ========================================================
-    # タブ（スキル・継承など）のすぐ下を正確に狙う (約33%)
-    header_ratio = 0.33 
-    # 「閉じる」ボタンと下部のグラデーションをカット (約13%)
-    footer_ratio = 0.13 
-    
-    header_h = int(base_H * header_ratio)
-    footer_h = int(base_H * footer_ratio)
-
-    final_header = base_img[:header_h, :]
-    final_footer = base_img[base_H - footer_h:, :]
-    
-    # 切り出したリスト部分
-    base_list = base_img[header_h : base_H - footer_h, :]
-
-    # 重なり判定用：1行分（約5%）だけをピンポイントで抜き出す
-    template_h = int(base_H * 0.05)
-    
-    # 左右のノイズ（顔アイコンやスクロールバー）を完全に無視する範囲
-    x_start = int(base_W * 0.25)
-    x_end = int(base_W * 0.85)
-
-    warning_flag = False
-
-    for i in range(1, len(image_paths)):
-        img_next = cv2.imread(image_paths[i])
-        next_H, next_W = img_next.shape[:2]
-        
-        # ウインドウサイズが途中で変わっていても、横幅と比率を1枚目にピタッと合わせる
-        if next_W != base_W:
-            scale = base_W / next_W
-            new_H = int(next_H * scale)
-            img_next = cv2.resize(img_next, (base_W, new_H))
-            
-        curr_H = img_next.shape[0]
-        curr_header_h = int(curr_H * header_ratio)
-        curr_footer_h = int(curr_H * footer_ratio)
-        
-        # 次の画像のリスト部分を抽出
-        next_list = img_next[curr_header_h : curr_H - curr_footer_h, :]
-
-        # ベース画像の一番下から「1行分」を切り取って型にする
-        template = base_list[-template_h:, x_start:x_end]
-        
-        # 次の画像のリスト全体から、型と完全に一致する場所を探す
-        search_area = next_list[:, x_start:x_end]
-        
-        # OpenCVのAIによる重なり検知
-        res = cv2.matchTemplate(search_area, template, cv2.TM_CCOEFF_NORMED)
-        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
-        
-        match_y = max_loc[1]
-
-        # 0.75以上なら「ほぼ完全一致」とみなす
-        if max_val < 0.75:
-            print(f"⚠️ 【警告】{i}枚目と{i+1}枚目で重なりが足りないか、ズレています (一致スコア: {max_val:.2f})")
-            warning_flag = True
-            base_list = np.vstack((base_list, next_list)) 
-        else:
-            # ピタリと重なった場所の「直下」から新しい部分だけを切り出し、結合する
-            new_part = next_list[match_y + template_h:, :]
-            base_list = np.vstack((base_list, new_part))
-
-    # 3. 上部ヘッダー ＋ 完成した巨大リスト ＋ 下部フッター を合体
-    final_img = np.vstack((final_header, base_list, final_footer))
-
-    if not warning_flag:
-        print("🎉 結合が完了しました！完璧に繋がりました。")
+if uploaded_files:
+    if len(uploaded_files) < 2:
+        st.warning("結合には2枚以上の画像が必要です。")
     else:
-        print("※一部で警告が出ました。画像を確認してください。")
+        if st.button("結合スタート！", type="primary"):
+            with st.spinner("画像を結合しています... 少々お待ちください。"):
+                uploaded_files = sorted(uploaded_files, key=lambda x: natural_keys(x.name))
+                
+                images = []
+                for f in uploaded_files:
+                    file_bytes = np.asarray(bytearray(f.read()), dtype=np.uint8)
+                    img = cv2.imdecode(file_bytes, 1)
+                    if img is not None:
+                        images.append(img)
+                
+                if len(images) >= 2:
+                    base_img = images[0]
+                    base_H, base_W = base_img.shape[:2]
 
-    print("\n=========================================")
-    print("【完成画像】")
-    print("以下の画像を 右クリック して「画像をコピー」 してください。")
-    print("=========================================\n")
+                    header_ratio = 0.33 
+                    footer_ratio = 0.13 
+                    header_h = int(base_H * header_ratio)
+                    footer_h = int(base_H * footer_ratio)
 
-    _, buffer = cv2.imencode('.png', final_img)
-    img_b64 = base64.b64encode(buffer).decode('utf-8')
-    display(HTML(f'<img src="data:image/png;base64,{img_b64}" style="max-width: 100%; border: 1px solid #ccc; box-shadow: 0 4px 8px rgba(0,0,0,0.1);">'))
+                    final_header = base_img[:header_h, :]
+                    final_footer = base_img[base_H - footer_h:, :]
+                    base_list = base_img[header_h : base_H - footer_h, :]
+
+                    template_h = int(base_H * 0.05)
+                    x_start = int(base_W * 0.25)
+                    x_end = int(base_W * 0.85)
+
+                    warning_flag = False
+
+                    for i in range(1, len(images)):
+                        img_next = images[i]
+                        next_H, next_W = img_next.shape[:2]
+                        
+                        if next_W != base_W:
+                            scale = base_W / next_W
+                            new_H = int(next_H * scale)
+                            img_next = cv2.resize(img_next, (base_W, new_H))
+                            
+                        curr_H = img_next.shape[0]
+                        curr_header_h = int(curr_H * header_ratio)
+                        curr_footer_h = int(curr_H * footer_ratio)
+                        
+                        next_list = img_next[curr_header_h : curr_H - curr_footer_h, :]
+                        template = base_list[-template_h:, x_start:x_end]
+                        search_area = next_list[:, x_start:x_end]
+                        
+                        res = cv2.matchTemplate(search_area, template, cv2.TM_CCOEFF_NORMED)
+                        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
+                        match_y = max_loc[1]
+
+                        if max_val < 0.75:
+                            st.warning(f"⚠️ {i}枚目と{i+1}枚目で重なりが足りないか、ズレている可能性があります")
+                            warning_flag = True
+                            base_list = np.vstack((base_list, next_list)) 
+                        else:
+                            new_part = next_list[match_y + template_h:, :]
+                            base_list = np.vstack((base_list, new_part))
+
+                    final_img = np.vstack((final_header, base_list, final_footer))
+                    
+                    if not warning_flag:
+                        st.success("🎉 結合が完了しました！")
+                    
+                    final_img_rgb = cv2.cvtColor(final_img, cv2.COLOR_BGR2RGB)
+                    st.image(final_img_rgb, caption="完成画像", use_container_width=True)
+                    
+                    is_success, buffer = cv2.imencode(".png", final_img)
+                    if is_success:
+                        st.download_button(
+                            label="📥 完成画像をダウンロード",
+                            data=buffer.tobytes(),
+                            file_name="uma_stitched_result.png",
+                            mime="image/png"
+                        )
